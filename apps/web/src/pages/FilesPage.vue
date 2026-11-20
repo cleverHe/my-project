@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** P-08 文件：只浏览/下载；按项目 + 环境限定；不提供在线删除/改写；无 S3 契约 */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '@/api/client'
 import type { FileEntry } from '@/api/types'
@@ -20,11 +20,14 @@ const error = ref<unknown>(null)
 const loading = ref(false)
 const now = new Date('2026-11-20T09:20:00.000Z')
 
+const envId = computed(() => state.environments.find((e) => e.kind === kind.value)?.id ?? '')
+
 async function load() {
   loading.value = true
   error.value = null
   try {
-    const res = await api.files(id, kind.value, '/', ui.state.scenario)
+    if (!envId.value) throw new Error('该项目还没有对应环境；先创建预览或发布正式后再看文件。')
+    const res = await api.files(id, envId.value, '/', ui.state.scenario)
     entries.value = res.data.items
   } catch (e) {
     error.value = e
@@ -39,6 +42,7 @@ function refuseWrite(action: string) {
 }
 
 onMounted(load)
+watch(kind, load)
 </script>
 
 <template>

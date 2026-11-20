@@ -34,7 +34,7 @@ const project = (id: string) => projects.find((p) => p.id === id)
 const token = (path: string) => path.split('/').filter(Boolean)
 
 export function dispatch(req: MockRequest): MockResult {
-  const seg = token(req.path)
+  let seg = token(req.path)
   // `POST /environments/{id}:wake` 形式：把动作从最后一段拆出来
   let action: string | null = null
   const last = seg.length - 1
@@ -44,10 +44,36 @@ export function dispatch(req: MockRequest): MockResult {
     action = act ?? null
   }
   const trace = req.traceId
-  const method = req.method
+  let method = req.method
+  const body = (req.body ?? {}) as Record<string, unknown>
+
+  // api-spec 规范路径 → Mock 内部路径（与 BFF `rewriteSpecAliases` 对齐）。
+  // Mock 只是试跑替身：这里同样保留旧路径，避免页面与契约任一写法都可运行。
+  if (method === 'DELETE' && seg[0] === 'shares' && seg[1]) {
+    method = 'POST'
+    action = 'revoke'
+  }
+  if (method === 'DELETE' && seg[0] === 'projects' && seg[1] && seg.length === 2) {
+    method = 'POST'
+    seg.push('delete')
+  }
+  if (seg[0] === 'groups') seg[0] = 'admin' // /groups → /admin/groups
+  if (seg[0] === 'audit') seg[0] = 'admin' // /audit → /admin/audit
+  else if (seg[0] === 'mcp-keys') seg = ['mcp', 'key']
+  else if (seg[0] === 'files') seg = ['projects', String(req.query?.project_id ?? ''), 'files']
+  else if (seg[0] === 'admin' && seg[1] === 'previews' && seg[2] === 'cleanup-candidates') seg = ['sys', 'previews', 'abnormal']
+  else if (seg[0] === 'admin' && seg[1] === 'previews' && seg[2] === 'cleanup') seg = ['sys', 'previews', 'cleanup']
+  else if (seg[0] === 'admin' && seg[1] === 'restores') {
+    seg = ['sys', 'restore']
+    if (body.confirm !== undefined) body.confirm_word = body.confirm
+  } else if (seg[0] === 'admin' && seg[1] === 'templates' && seg[3] === 'versions') seg = ['sys', 'templates', seg[2]!, 'publish']
+  else if (seg[0] === 'admin' && seg[1] === 'templates' && seg[3] === 'deprecate') seg = ['sys', 'templates', seg[2]!, 'offline']
+  else if (seg[0] === 'admin' && seg[1] === 'settings' && seg[2] && method === 'PATCH') {
+    body.key = seg[2]
+    seg = ['admin', 'settings']
+  }
   const scenario = req.scenario ?? ''
   const q = req.query ?? {}
-  const body = (req.body ?? {}) as Record<string, unknown>
 
   // 会话：Mock 里未登录（无 userId）只能拿到 401，登录页用它演示
   if (seg[0] !== 'auth' && !req.auth.userId) {
@@ -407,6 +433,34 @@ export function dispatch(req: MockRequest): MockResult {
   if (seg[0] === 'sys' && seg[1] === 'roles') {
     if (method === 'GET') return ok(roleModel)
     if (method === 'PUT') return ok({ version: 'model-8', effective_within_seconds: 30, audit_recorded: true, affected: { user: 214, admin: 6, sysadmin: 2 } })
+  }
+  if (seg[0] === 'templates' && method === 'GET') {
+    // api-spec §5.6：门户模板库（普通用户可读）
+    if (!seg[1]) return ok({ items: templates.filter((t) => t.status !== 'offline'), note: '更新规范不覆盖用户已修改文件' })
+    if (seg[2] === 'versions') {
+      const t = templates.find((x) => x.id === seg[1])
+      if (!t) return fail(trace, 'project.template_unavailable', '模板库暂不可用，所选模板无法加载。', '可回退空白模板继续；不会静默替换已选模板。', 422)
+      return ok({ items: [{ version: 'v1.0.0', status: 'active', published_at: '2026-11-10T02:00:00.000Z', semantic: '首版：最小可运行 demo + 规范 + 4 个门户 MCP Skill' }] })
+    }
+  }
+  if (seg[0] === 'environments' && seg[2] === 'logs' && method === 'GET') {
+    // api-spec §8.2：按环境取日志（source ∈ build/runtime/history）
+    const source = String(q.source ?? 'runtime')
+    if (source === 'history' && scenario === 'archive_fail') {
+      return fail(trace, 'log.archive_failed', '历史日志转存失败，当前仅能显示实时日志。', '重试转存；不静默丢弃日志。', 503)
+    }
+    return ok({
+      source,
+      lines: [
+        { at: '2026-11-20T08:39:58.000Z', level: 'info', text: 'GET /healthz 200 12ms' },
+        { at: '2026-11-20T08:39:40.000Z', level: 'warn', text: 'user_id=usr_trial_lin request slow 1832ms' },
+      ],
+      next_cursor: null,
+      truncated: false,
+      ai_hint: { available: false, reason: 'ai_disabled_by_default' },
+      retention_days: 30,
+      redacted: true,
+    })
   }
   if (seg[0] === 'sys' && seg[1] === 'templates') {
     if (method === 'GET') return ok({ items: templates })

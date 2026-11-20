@@ -12,7 +12,8 @@ import { useUi } from '@/stores/ui'
 const route = useRoute()
 const id = String(route.params.id)
 const ui = useUi()
-const key = ref<{ fingerprint: string; status: string; created_at: string; last_used_at: string } | null>(null)
+// api-spec §7.8：GET /mcp-keys 只返回指纹前缀与状态，不返回明文
+const key = ref<{ key_id: string; fingerprint_prefix: string; status: string; created_at: string; last_used_at: string } | null>(null)
 const plaintext = ref<string | null>(null)
 const files = ref<string[]>([])
 const update = ref<{ added: number; updated: number; kept_user_edits: number; conflicts: { file: string; rule: string; why: string; action: string }[] } | null>(null)
@@ -23,8 +24,8 @@ const confirmUpdate = ref(false)
 async function load() {
   error.value = null
   try {
-    const [k, p] = await Promise.all([api.mcpKey(), api.accessPack(id)])
-    key.value = k.data
+    const [k, p] = await Promise.all([api.mcpKeys(), api.accessPack(id)])
+    key.value = k.data.items[0] ?? null
     files.value = p.data.files
   } catch (e) {
     error.value = e
@@ -45,7 +46,7 @@ async function rotate() {
 async function revoke() {
   confirmRevoke.value = false
   try {
-    await api.revokeMcpKey()
+    if (key.value) await api.revokeMcpKey(key.value.key_id)
     plaintext.value = null
     ui.push('success', 'Key 已撤销', ['≤1 分钟内所有 Agent 调用失败；不会影响已有部署。'])
     await load()
@@ -74,7 +75,7 @@ onMounted(load)
     <section class="panel">
       <div class="panel-head"><h2>MCP 单用户 Key</h2><span class="badge">只存指纹</span></div>
       <dl class="kv" v-if="key">
-        <dt>指纹</dt><dd class="mono">{{ key.fingerprint }}</dd>
+        <dt>指纹</dt><dd class="mono">{{ key.fingerprint_prefix }}</dd>
         <dt>状态</dt><dd>{{ key.status === 'active' ? '有效' : '已撤销' }}</dd>
         <dt>创建时间</dt><dd>{{ formatDateTime(key.created_at) }}</dd>
         <dt>最近使用</dt><dd>{{ formatDateTime(key.last_used_at) }}</dd>

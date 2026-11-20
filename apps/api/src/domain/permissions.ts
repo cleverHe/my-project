@@ -71,6 +71,13 @@ const OP_RULES: { method: string; re: RegExp; op: string }[] = [
   { method: 'GET', re: /^\/sys\/roles$/, op: 'sys:role' },
   { method: 'PUT', re: /^\/sys\/roles$/, op: 'sys:role' },
   { method: 'GET', re: /^\/sys\/templates$/, op: 'sys:template' },
+  // api-spec 规范路径（与 /sys/* 分权：模板库对所有登录用户只读，管理动作仍限系统管理员）
+  { method: 'GET', re: /^\/templates$/, op: 'project:read' },
+  { method: 'GET', re: /^\/templates\/[^/]+\/versions$/, op: 'project:read' },
+  { method: 'POST', re: /^\/admin\/templates(\/[^/]+\/(versions|deprecate))?$/, op: 'sys:template' },
+  { method: 'GET', re: /^\/environments\/[^/]+\/logs(\/tail)?$/, op: 'log:read' },
+  { method: 'GET', re: /^\/files(\/(stat|download))?$/, op: 'file:read' },
+  { method: 'POST', re: /^\/admin\/restores$/, op: 'system:backup' },
   { method: 'POST', re: /^\/sys\/templates\/[^/]+\/(publish|offline)$/, op: 'sys:template' },
   { method: 'GET', re: /^\/sys\/previews\/abnormal$/, op: 'sys:cleanup' },
   { method: 'POST', re: /^\/sys\/previews\/cleanup$/, op: 'sys:cleanup' },

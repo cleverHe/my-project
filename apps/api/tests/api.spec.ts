@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildApp } from '../src/app.js'
+import { buildApp, trialOptionsFromEnv } from '../src/app.js'
 import { ERROR_TABLE } from '../src/domain/errors.js'
 import { adjustParamVerdict, ADMIN_PARAM_EXCEPTIONS, ROLE_OPS } from '../src/domain/permissions.js'
 import { resetStore } from '../src/repo/store.js'
@@ -10,7 +10,9 @@ const COOKIE = `trial_user=usr_trial_lin; trial_csrf=${CSRF}`
 
 async function client(opts: Parameters<typeof buildApp>[0] = {}) {
   resetStore()
-  const app = buildApp(opts)
+  // 测试夹具显式 opt-in 试跑能力（F-03）：默认 buildApp() 是 fail-safe 关闭，
+  // 需要场景注入/任务同步推进的用例必须显式声明，不得依赖"未设置即开启"。
+  const app = buildApp({ allowScenario: true, autoAdvanceTasks: true, ...opts })
   const call = async (method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE', url: string, body?: unknown, extra: Record<string, string> = {}, user = 'usr_trial_lin') => {
     const res = await app.inject({ method, url, payload: body as never, headers: { cookie: `trial_user=${user}; trial_csrf=${CSRF}`, 'x-csrf-token': CSRF, ...extra } })
     return { status: res.statusCode, body: res.body ? JSON.parse(res.body) : null, headers: res.headers }
@@ -149,7 +151,8 @@ describe('发布契约（闸门 / 互斥 / 超时 / 实际 SHA）', () => {
   })
 
   it('同一环境并发发布被拒（互斥），且不自动重试', async () => {
-    const { app, call } = await client()
+    // 需要观察“发布中”中间态：显式关闭任务自动推进（默认即关闭，这里写清以表明依赖）
+    const { app, call } = await client({ autoAdvanceTasks: false })
     const a = await call('POST', '/api/v1/environments/env_trial_cs_prod:deploy', { version_label: 'v2.0.0' }, { 'idempotency-key': 'idem-a' })
     expect(a.status).toBe(202)
     const noKey = await call('POST', '/api/v1/environments/env_trial_cs_prod:deploy', { version_label: 'v2.2.0' })
@@ -380,5 +383,162 @@ describe('权限模型单元', () => {
     expect(adjustParamVerdict('admin', 'deploy_queue_limit', 10, 8, 10).errorCode).toBe('admin.param_raise_forbidden')
     expect(adjustParamVerdict('admin', 'deploy_queue_limit', 8, 10, 10).ok).toBe(true)
     expect(adjustParamVerdict('admin', 'backup_time', 2, 2, 3).errorCode).toBe('admin.param_forbidden')
+  })
+})
+
+describe('试跑开关显式 opt-in（F-03）', () => {
+  it('默认 buildApp() 关闭：场景注入、QA 身份、试跑登录全部失效', async () => {
+    resetStore()
+    const app = buildApp()
+    const health = await app.inject({ method: 'GET', url: '/healthz' })
+    expect(health.statusCode).toBe(200)
+
+    // 场景注入被忽略：authz_down 不再触发 503
+    const shadow = await app.inject({ method: 'GET', url: '/api/v1/projects?scenario=authz_down', headers: { 'x-trial-user': 'usr_trial_lin' } })
+    expect(shadow.statusCode).toBe(401)
+
+    // X-QA-Role 身份注入失效
+    const qa = await app.inject({ method: 'GET', url: '/api/v1/me', headers: { 'x-qa-role': 'sysadmin' } })
+    expect(qa.statusCode).toBe(401)
+    expect(qa.json().errorCode).toBe('auth.unauthenticated')
+
+    // 试跑登录端点关闭
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/trial-login', payload: {} })
+    expect(login.statusCode).toBe(404)
+    expect(login.json().errorCode).toBe('request.path_unknown')
+    await app.close()
+  })
+
+  it('显式 allowScenario=true 后场景注入与 QA 身份生效（仍需显式传参）', async () => {
+    const { app, call } = await client({ allowScenario: true, autoAdvanceTasks: false })
+    const hit = await call('POST', '/api/v1/projects/prj_trial_ai_cs/shares?scenario=authz_down', { env_kind: 'preview', branch: 'feat/order' })
+    expect(hit.status).toBe(503)
+    expect(hit.body.errorCode).toBe('authz.unavailable')
+    const qa = await app.inject({ method: 'GET', url: '/api/v1/me', headers: { 'x-qa-role': 'sysadmin' } })
+    expect(qa.statusCode).toBe(200)
+    expect(qa.json().role).toBe('sysadmin')
+    await app.close()
+  })
+
+  it('server.ts 环境变量解析：只有 TRIAL_SCENARIO 严格等于 "1" 才开', () => {
+    expect(trialOptionsFromEnv({})).toEqual({ allowScenario: false, autoAdvanceTasks: false })
+    expect(trialOptionsFromEnv({ TRIAL_SCENARIO: '0' })).toEqual({ allowScenario: false, autoAdvanceTasks: false })
+    expect(trialOptionsFromEnv({ TRIAL_SCENARIO: 'true' })).toEqual({ allowScenario: false, autoAdvanceTasks: false })
+    expect(trialOptionsFromEnv({ TRIAL_SCENARIO: '1' })).toEqual({ allowScenario: true, autoAdvanceTasks: true })
+  })
+})
+
+describe('api-spec 规范路径（F-01 兼容映射）', () => {
+  it('GET /templates 普通用户可读，GET /templates/{id}/versions 可用', async () => {
+    const { app, call } = await client()
+    const t = await call('GET', '/api/v1/templates')
+    expect(t.status).toBe(200)
+    expect(Array.isArray(t.body.items)).toBe(true)
+    expect(t.body.items[0].has_demo).toBe(true)
+    const v = await call('GET', '/api/v1/templates/tpl_ai_chat/versions')
+    expect(v.status).toBe(200)
+    expect(v.body.items[0].version).toBe('v1.0.0')
+    const missing = await call('GET', '/api/v1/templates/tpl_none/versions')
+    expect(missing.status).toBe(422)
+    expect(missing.body.errorCode).toBe('project.template_unavailable')
+    await app.close()
+  })
+
+  it('DELETE /projects/{id} 与兼容别名 POST /projects/{id}/delete 行为一致', async () => {
+    const { app, call } = await client()
+    const bad = await call('DELETE', '/api/v1/projects/prj_trial_ai_cs', { confirm_name: '错的' })
+    expect(bad.status).toBe(422)
+    expect(bad.body.errorCode).toBe('request.invalid')
+    const ok = await call('DELETE', '/api/v1/projects/prj_trial_ai_cs', { confirm_name: '智能客服' })
+    expect(ok.status).toBe(200)
+    expect(ok.body.status).toBe('soft_deleted')
+    await app.close()
+  })
+
+  it('DELETE /shares/{id} 撤销分享（映射到既有 revoke 逻辑）', async () => {
+    const { app, call } = await client()
+    const r = await call('DELETE', '/api/v1/shares/shr_trial_1')
+    expect(r.status).toBe(200)
+    expect(r.body.revoked).toBe(true)
+    await app.close()
+  })
+
+  it('GET /groups 与 POST /groups/{id}:dissolve 命中既有实现并保留权限位', async () => {
+    const { app, call } = await client()
+    const asUser = await call('GET', '/api/v1/groups')
+    expect(asUser.status).toBe(403)
+    expect(asUser.body.errorCode).toBe('authz.forbidden')
+    const asAdmin = await call('GET', '/api/v1/groups', undefined, {}, 'usr_trial_zhou')
+    expect(asAdmin.status).toBe(200)
+    const dis = await call('POST', '/api/v1/groups/grp_platform:dissolve', { confirm: true }, {}, 'usr_trial_zhou')
+    expect(dis.status).toBe(200)
+    expect(dis.body.dissolved).toBe(true)
+    await app.close()
+  })
+
+  it('GET /environments/{id}/logs 返回契约形状（source/lines/ai_hint）', async () => {
+    const { app, call } = await client()
+    const r = await call('GET', '/api/v1/environments/env_trial_cs_prod/logs?source=build')
+    expect(r.status).toBe(200)
+    expect(r.body.source).toBe('build')
+    expect(Array.isArray(r.body.lines)).toBe(true)
+    expect(r.body.lines[0].text).toContain('/healthz')
+    expect(r.body.ai_hint.available).toBe(false)
+    const missing = await call('GET', '/api/v1/environments/env_none/logs')
+    expect(missing.status).toBe(404)
+    expect(missing.body.errorCode).toBe('env.not_found')
+    await app.close()
+  })
+
+  it('PATCH /projects/{id} 只改名；slug 不可变；拥有者变更走 transfer', async () => {
+    const { app, call } = await client()
+    const ok = await call('PATCH', '/api/v1/projects/prj_trial_ai_cs', { name: '智能客服 2' })
+    expect(ok.status).toBe(200)
+    expect(ok.body.name).toBe('智能客服 2')
+    const slug = await call('PATCH', '/api/v1/projects/prj_trial_ai_cs', { name: 'x', slug: 'other' })
+    expect(slug.status).toBe(422)
+    expect(slug.body.errorCode).toBe('project.slug_immutable')
+    const owner = await call('PATCH', '/api/v1/projects/prj_trial_ai_cs', { owner_user_id: 'usr_trial_chen' })
+    expect(owner.status).toBe(400)
+    const other = await call('PATCH', '/api/v1/projects/prj_trial_ai_cs', { name: 'y' }, {}, 'usr_trial_zhou')
+    expect(other.status).toBe(403)
+    await app.close()
+  })
+
+  it('POST /admin/restores 兼容映射到恢复逻辑（仍需系统管理员 + 确认词）', async () => {
+    const { app, call } = await client()
+    const bad = await call('POST', '/api/v1/admin/restores', { backup_id: 'bkp_trial_auto_1', confirm: 'restore', scope: 'platform' }, { 'idempotency-key': 'rs-1' }, 'usr_trial_zheng')
+    expect(bad.status).toBe(422)
+    // 错误码命名差异已登记（api-spec 未逐一定义恢复错误码；实现沿用 backup.restore_confirm_required）
+    expect(bad.body.errorCode).toBe('backup.restore_confirm_required')
+    const ok = await call('POST', '/api/v1/admin/restores', { backup_id: 'bkp_trial_auto_1', confirm: 'RESTORE', scope: 'platform' }, { 'idempotency-key': 'rs-2' }, 'usr_trial_zheng')
+    expect([200, 202]).toContain(ok.status)
+    await app.close()
+  })
+})
+
+describe('api-spec 文件读取契约（§8.4）', () => {
+  it('/files、/files:stat、/files:download 共用只读边界并可下载', async () => {
+    resetStore()
+    const app = buildApp({ allowScenario: true, autoAdvanceTasks: true })
+    const call = (method: string, url: string) =>
+      app.inject({ method: method as 'GET', url, headers: { 'x-qa-role': 'user' } })
+
+    const list = await call('GET', '/api/v1/files?project_id=prj_trial_ai_cs&env_id=env_trial_cs_prod&path=/')
+    expect(list.statusCode).toBe(200)
+    expect(list.json().read_only).toBe(true)
+
+    const stat = await call('GET', '/api/v1/files:stat?project_id=prj_trial_ai_cs&path=/report-2026-11.pdf')
+    expect(stat.statusCode).toBe(200)
+    expect(stat.json().name).toBe('report-2026-11.pdf')
+
+    const dl = await call('GET', '/api/v1/files:download?project_id=prj_trial_ai_cs&path=/report-2026-11.pdf')
+    expect(dl.statusCode).toBe(200)
+    expect(String(dl.headers['content-disposition'])).toContain('attachment')
+
+    const bad = await call('GET', '/api/v1/files?project_id=prj_trial_ai_cs&env_id=env_trial_cs_prod&path=/../etc/passwd')
+    expect(bad.statusCode).toBe(400)
+    expect(bad.json().errorCode).toBe('file.path_invalid')
+    await app.close()
   })
 })

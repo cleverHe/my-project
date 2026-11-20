@@ -14,6 +14,12 @@ import { abnormalPreviews, audits, idempotency, me, platform, projects, projectB
 import type { AuditRow, Environment, Project, Task } from './types.js'
 
 const T0 = '2026-11-20T09:20:00.000Z'
+/** 试跑日志样本（已脱敏；不含令牌/连接串；正式实现从转存读取） */
+const LOG_LINES = [
+  { at: '2026-11-20T08:39:58.000Z', level: 'info', message: 'GET /healthz 200 12ms' },
+  { at: '2026-11-20T08:39:40.000Z', level: 'warn', message: 'user_id=usr_trial_lin request slow 1832ms path=/api/orders' },
+  { at: '2026-11-20T08:38:00.000Z', level: 'error', message: 'upstream timeout after 3000ms (traceId=trc_trial_1)' },
+] as const
 const DEPLOY = {
   queueLimit: 10,
   concurrency: 3,
@@ -57,13 +63,50 @@ declare module 'fastify' {
   }
 }
 
+/**
+ * api-spec 规范路径 → 本试跑实现既有路径的兼容映射（只做名称/形状兼容，不改变业务语义）。
+ * 目的：让「按契约写的调用」与「试跑前端既有调用」都能命中同一处理逻辑；
+ * 契约中没有的路径不在此表，未匹配仍走 404 `request.path_unknown`。
+ */
+function rewriteSpecAliases(req: { method?: string; url?: string }): string {
+  const method = (req.method ?? 'GET').toUpperCase()
+  // 1) 动作式 `:action` → `/action`（api-spec 用 `/environments/{id}:wake` 写法）
+  const url = (req.url ?? '').replace(/:([a-z_]+)(?=\?|$)/, '/$1')
+  const qIdx = url.indexOf('?')
+  const rawPath = (qIdx >= 0 ? url.slice(0, qIdx) : url).replace(/\/+$/, '') || '/'
+  const query = qIdx >= 0 ? url.slice(qIdx) : ''
+  const prefix = rawPath.startsWith('/api/v1') ? '/api/v1' : ''
+  const path = prefix ? rawPath.slice(prefix.length) || '/' : rawPath
+  const out = (p: string) => `${prefix}${p}${query}`
+
+  if (method === 'GET' && path === '/groups') return out('/admin/groups')
+  if (method === 'POST' && path === '/admin/restores') return out('/sys/restore')
+  let m = /^\/groups\/([^/]+)\/dissolve$/.exec(path)
+  if (method === 'POST' && m) return out(`/admin/groups/${m[1]}/dissolve`)
+  m = /^\/admin\/templates\/([^/]+)\/versions$/.exec(path)
+  if (method === 'POST' && m) return out(`/sys/templates/${m[1]}/publish`)
+  m = /^\/admin\/templates\/([^/]+)\/deprecate$/.exec(path)
+  if (method === 'POST' && m) return out(`/sys/templates/${m[1]}/offline`)
+  m = /^\/projects\/([^/]+)\/access-pack$/.exec(path)
+  if (method === 'POST' && m) return out(`/projects/${m[1]}/access-pack/update`)
+  return url
+}
+
+/** 试跑开关必须显式 opt-in（F-03）：未设置或非 `true` 时一律关闭。 */
+export function trialOptionsFromEnv(env: NodeJS.ProcessEnv): AppOptions {
+  const on = env.TRIAL_SCENARIO === '1'
+  return { allowScenario: on, autoAdvanceTasks: on }
+}
+
 export function buildApp(opts: AppOptions = {}): FastifyInstance {
-  // api-spec 用 `POST /environments/{id}:wake` 形式；Fastify 路由里 `:` 是参数前缀，
-  // 因此在路由前把 `:动作` 归一化成 `/动作`，保持对外契约不变。
+  // 故障注入与「同步推进任务」都是试跑专用能力：**默认关闭**，只有显式 opt-in 才生效。
+  const allowScenario = opts.allowScenario === true
+  const autoAdvanceTasks = opts.autoAdvanceTasks === true
   const app = Fastify({
     logger: false,
     bodyLimit: 2 * 1024 * 1024,
-    rewriteUrl: (req) => (req.url ?? '').replace(/:([a-z_]+)(?=\?|$)/, '/$1'),
+    // 先做 api-spec 兼容映射与 `:动作` 归一化，再进入路由匹配
+    rewriteUrl: rewriteSpecAliases,
   })
   app.register(cookie)
 
@@ -74,12 +117,13 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     reply.header('X-Trace-Id', req.traceId)
     reply.header('X-Mock', 'true')
     const sc = req.query as Record<string, unknown>
-    req.scenario = opts.allowScenario === false ? '' : String(sc.scenario ?? '')
-    const cookieUser = req.cookies['trial_user'] ?? null
-    const headerUser = (req.headers['x-trial-user'] as string | undefined) ?? null
+    req.scenario = allowScenario ? String(sc.scenario ?? '') : ''
+    // 身份注入同样是试跑替身：非试跑模式下一律不认（fail-safe，避免误部署后被冒充）
+    const cookieUser = allowScenario ? (req.cookies['trial_user'] ?? null) : null
+    const headerUser = allowScenario ? ((req.headers['x-trial-user'] as string | undefined) ?? null) : null
     // 真实环境：会话 Cookie 由 OAuth 回调建立，前端不可读；这里只做试跑替身
     // 试跑：QA 契约脚本以 X-QA-Role 声明身份（真实环境不存在该头，且 allowScenario=false 时忽略）
-    const qaRole = opts.allowScenario === false ? null : (req.headers['x-qa-role'] as string | undefined)
+    const qaRole = allowScenario ? (req.headers['x-qa-role'] as string | undefined) : null
     const qaUser = qaRole ? ({ user: 'usr_trial_lin', admin: 'usr_trial_zhou', sysadmin: 'usr_trial_zheng' } as Record<string, string>)[qaRole] : undefined
     const userId = qaUser ?? headerUser ?? cookieUser
     const u = userId ? userById(userId) : undefined
@@ -132,7 +176,7 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     }
     // 试跑：QA 契约脚本无法走浏览器拿双提交 Cookie，声明 X-QA-Role 时豁免 CSRF。
     // 只在 allowScenario=true（试跑）下存在；正式环境必须删除该豁免。
-    const qaHarness = opts.allowScenario !== false && Boolean(req.headers['x-qa-role'])
+    const qaHarness = allowScenario && Boolean(req.headers['x-qa-role'])
     const token = (req.headers['x-csrf-token'] as string | undefined) ?? null
     if (!qaHarness && (!req.actor?.csrf || !token || token !== req.actor.csrf)) {
       fail(reply, 'auth.csrf_invalid', req.traceId)
@@ -275,6 +319,7 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   app.get('/api/v1/setup/status', async () => ({ bootstrap_done: true, admin_open_id_configured: false, note: '首个管理员 open_id 为占位（T-02 待提供）' }))
 
   app.post('/api/v1/auth/trial-login', async (req, reply) => {
+    if (!allowScenario) return fail(reply, 'request.path_unknown', req.traceId, { note: '试跑专用登录在非试跑模式（未设 TRIAL_SCENARIO=1）下关闭。' })
     // 试跑专用：不跳真实飞书。真实环境由 /auth/feishu/start → 回调建立 HttpOnly 会话。
     const csrf = `csrf_${randomUUID()}`
     reply.setCookie('trial_user', me.user_id, { httpOnly: true, sameSite: 'lax', path: '/' })
@@ -282,10 +327,13 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     return reply.code(200).send({ ...me, trial_only: true })
   })
 
-  app.get('/api/v1/auth/feishu/start', async (req) => {
+  const feishuStart = async (req: FastifyRequest) => {
     const redirect = String((req.query as Record<string, unknown>).redirect ?? '/dashboard')
     return { redirect_url: `https://open.feishu.cn/open-apis/authen/v1/authorize?state=trial`, state: 'trial', redirect_hint: redirect, note: '真实 OAuth 未接通（ENV 未完成）' }
-  })
+  }
+  // api-spec §4.1 用 POST；试跑登录页为了方便跳转也接受 GET（试跑专用，正式环境删除）
+  app.post('/api/v1/auth/feishu/start', feishuStart)
+  app.get('/api/v1/auth/feishu/start', feishuStart)
 
   app.post('/api/v1/auth/logout', async (_req, reply) => {
     reply.clearCookie('trial_user', { path: '/' })
@@ -346,6 +394,23 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
       gate: p.gate,
       deleted: p.status === 'soft_deleted',
     }
+  })
+
+  /** api-spec §5.3：只允许改名；slug 不可变；拥有者变更必须走 transfer */
+  app.patch('/api/v1/projects/:id', async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const p = visibleProject(req, id)
+    if (!p) return fail(reply, 'project.not_found', req.traceId)
+    if (p.owner_id !== req.actor!.id && req.actor!.role !== 'sysadmin') return fail(reply, 'authz.forbidden', req.traceId, { required: '拥有者或系统管理员' })
+    const body = (req.body ?? {}) as Record<string, unknown>
+    if ('slug' in body && body.slug !== p.slug) return fail(reply, 'project.slug_immutable', req.traceId, { field: 'slug' })
+    if ('owner_user_id' in body) return fail(reply, 'request.param_invalid', req.traceId, { field: 'owner_user_id', note: '拥有者变更走 POST /projects/{id}/transfer' })
+    const name = typeof body.name === 'string' ? body.name.trim() : ''
+    if (!name) return fail(reply, 'request.param_invalid', req.traceId, { field: 'name' })
+    return write(req, reply, { action: 'project.update', target: { kind: 'project', id }, detail: `name ${p.name} -> ${name}` }, () => {
+      p.name = name
+      return { body: { id: p.id, name: p.name, slug: p.slug } }
+    })
   })
 
   app.get('/api/v1/projects/:id/main', async (req, reply) => {
@@ -515,7 +580,7 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
       return fail(reply, 'request.param_invalid', req.traceId, { fields: ['sha', 'branch'], note: '只发布 main 的最新提交；不接受指定提交/分支。' })
     }
     // 发布闸门只挡新发布；已运行环境与读取继续服务（GAP-06）
-    const gatePaused = p.gate.paused || (opts.allowScenario !== false && req.headers['x-qa-gate'] === 'paused')
+    const gatePaused = p.gate.paused || (allowScenario && req.headers['x-qa-gate'] === 'paused')
     if (gatePaused && env.kind === 'production') {
       return fail(reply, 'deploy.backup_paused', req.traceId, { reason: p.gate.reason, paused_since: p.gate.paused_since, resume_mechanism: p.gate.resume_mechanism ?? 'T-08_undefined' })
     }
@@ -561,7 +626,7 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     ;(task as Task & { scenario?: string }).scenario = req.scenario
     return write(req, reply, { action: 'deploy.start', target: { kind: 'environment', id: env.id }, detail: `${versionLabel} sha=3f2a9c1` }, () => {
       tasks.set(taskId, task)
-      if (opts.autoAdvanceTasks) scheduleAdvance(task)
+      if (autoAdvanceTasks) scheduleAdvance(task)
       // 预览部署不产生备份记录（api-spec 10.2）：即使请求勾选备份也返回 required=false
       const out = { task: { id: taskId, status: 'running', poll_after_ms: DEPLOY.pollMs, backup: { required: withBackup, kind: withBackup ? 'pre_deploy' : null }, sha: task.sha, version_label: versionLabel } }
       rememberIdempotency(req, 202, out)
@@ -689,18 +754,45 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
       return fail(reply, 'platform.unavailable', req.traceId, { subsystem: 'log-archive', note: '日志转存失败：仅影响归档，不影响运行；已提示下次重试。' })
     }
     return {
-      items: [
-        { at: '2026-11-20T08:39:58.000Z', level: 'info', message: 'GET /healthz 200 12ms' },
-        { at: '2026-11-20T08:39:40.000Z', level: 'warn', message: 'user_id=usr_trial_lin request slow 1832ms path=/api/orders' },
-        { at: '2026-11-20T08:38:00.000Z', level: 'error', message: 'upstream timeout after 3000ms (traceId=trc_trial_1)' },
-      ],
+      items: LOG_LINES,
       source,
       retention_days: DEPLOY.logRetentionDays,
       redacted: true,
-      note: '日志已脱敏（8 类）；转存保留 30 天并计入项目配额；不接外部 AI。',
+      note: '项目级聚合视图（契约未定义，见 self-check F-01 分类）；正式契约按环境取日志：GET /environments/{id}/logs。',
     }
   })
 
+  /** api-spec §8.2 规范形状：按环境取日志（source ∈ build/runtime/history，游标分页） */
+  /** api-spec §8.2：`logs:tail` 只取最近 N 行（不是 SSE，明确不实现实时流） */
+  app.get('/api/v1/environments/:id/logs/tail', async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const env = projects.flatMap((p) => p.environments).find((e) => e.id === id)
+    if (!env) return fail(reply, 'env.not_found', req.traceId, { env_id: id })
+    if (!visibleProject(req, env.project_id)) return fail(reply, 'project.not_found', req.traceId)
+    const limit = Math.min(Number((req.query as Record<string, string | undefined>).limit ?? 2) || 2, LOG_LINES.length)
+    return { source: 'runtime', lines: LOG_LINES.slice(0, limit).map((l) => ({ at: l.at, level: l.level, text: l.message })), tail: true, sse: false, note: '只返回最近若干行；不提供实时推送（未实现 SSE）。' }
+  })
+
+  app.get('/api/v1/environments/:id/logs', async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const env = projects.flatMap((p) => p.environments).find((e) => e.id === id)
+    if (!env) return fail(reply, 'env.not_found', req.traceId, { env_id: id })
+    if (!visibleProject(req, env.project_id)) return fail(reply, 'project.not_found', req.traceId)
+    const q = req.query as Record<string, string | undefined>
+    const source = ['build', 'runtime', 'history'].includes(String(q.source)) ? String(q.source) : 'runtime'
+    if (req.scenario === 'archive_fail' && source === 'history') {
+      return fail(reply, 'platform.unavailable', req.traceId, { subsystem: 'log-archive', note: '日志转存失败：仅影响归档，不影响运行；已提示下次重试。' })
+    }
+    return {
+      source,
+      lines: LOG_LINES.map((l) => ({ at: l.at, level: l.level, text: l.message })),
+      next_cursor: null,
+      truncated: false,
+      ai_hint: { available: false, reason: 'ai_disabled_by_default' },
+      retention_days: DEPLOY.logRetentionDays,
+      redacted: true,
+    }
+  })
   app.post('/api/v1/projects/:id/logs/ai', async (req, reply) => {
     const { id } = req.params as { id: string }
     if (!visibleProject(req, id)) return fail(reply, 'project.not_found', req.traceId)
@@ -758,10 +850,13 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     return write(req, reply, { action: 'share.create', target: { kind: 'environment', id: env.id } }, () => ({ status: 201, body: { id: `shr_${randomUUID().slice(0, 8)}`, env_kind: env.kind, branch: env.branch, url: env.url, created_at: new Date().toISOString(), note: '链接不授予权限；未登录会 302 到登录。' } }))
   })
 
-  app.post('/api/v1/shares/:shareId/revoke', async (req, reply) => {
-    const shareId = (req.params as { shareId: string }).shareId
+  const revokeShare = async (req: FastifyRequest, reply: FastifyReply) => {
+    const shareId = (req.params as { shareId?: string; id?: string }).shareId ?? (req.params as { id?: string }).id ?? ''
     return write(req, reply, { action: 'share.revoke', target: { kind: 'share', id: shareId } }, () => ({ body: { revoked: true } }))
-  })
+  }
+  // api-spec §9.3 规范形状 `DELETE /shares/{id}`；试跑前端仍用 `POST /shares/{id}:revoke`
+  app.delete('/api/v1/shares/:id', revokeShare)
+  app.post('/api/v1/shares/:shareId/revoke', revokeShare)
 
   app.get('/api/v1/projects/:id/backups', async (req, reply) => {
     const { id } = req.params as { id: string }
@@ -817,7 +912,7 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     return write(req, reply, { action: 'project.transfer', target: { kind: 'project', id } }, () => ({ body: { pending_confirmation: true, note: '需对方确认后生效；拥有者是项目属性，不新增角色。' } }))
   })
 
-  app.post('/api/v1/projects/:id/delete', async (req, reply) => {
+  const softDeleteProject = async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as { id: string }
     const p = visibleProject(req, id)
     if (!p) return fail(reply, 'project.not_found', req.traceId)
@@ -827,7 +922,10 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
       p.status = 'soft_deleted'
       return { body: { status: 'soft_deleted', note: '30 天内可由管理员恢复；恢复后数据以最近一次备份为准。' } }
     })
-  })
+  }
+  // api-spec §5.5 规范形状 `DELETE /projects/{id}`；试跑前端仍用 `POST /projects/{id}/delete`（兼容别名）
+  app.delete('/api/v1/projects/:id', softDeleteProject)
+  app.post('/api/v1/projects/:id/delete', softDeleteProject)
 
   app.post('/api/v1/projects/:id/restore', async (req, reply) => {
     const { id } = req.params as { id: string }
@@ -973,6 +1071,18 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
 
   app.get('/api/v1/sys/templates', async () => ({ items: templates }))
 
+  /** api-spec §5.6：门户模板库（创建向导用，普通用户可用，故与 /sys/templates 分权） */
+  app.get('/api/v1/templates', async () => ({
+    items: templates.filter((t) => t.available).map((t) => ({ ...t, status: 'active', has_demo: true, has_spec: true, has_skills: true, build_preset: 'node-vue-bff' })),
+    note: '只返回已发布可用版本；更新规范不覆盖用户已修改文件。',
+  }))
+
+  app.get('/api/v1/templates/:id/versions', async (req, reply) => {
+    const { id } = req.params as { id: string }
+    if (!templates.some((t) => t.id === id)) return fail(reply, 'project.template_unavailable', req.traceId, { template_id: id })
+    return { items: [{ version: 'v1.0.0', status: 'active', published_at: '2026-11-10T02:00:00.000Z', semantic: '首版：最小可运行 demo + 规范 + 4 个门户 MCP Skill' }] }
+  })
+
   app.post('/api/v1/sys/templates/:id/:action', async (req, reply) => {
     const { id, action } = req.params as { id: string; action: string }
     const t = templates.find((x) => x.id === id)
@@ -1061,7 +1171,13 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
 
   app.post('/api/v1/sys/restore', async (req, reply) => {
     const body = (req.body ?? {}) as Record<string, unknown>
-    if (String(body.confirm_word ?? '') !== 'RESTORE') return fail(reply, 'backup.restore_confirm_required', req.traceId)
+    // api-spec §10.3 用 `confirm: "RESTORE"`；试跑前端历史写法为 `confirm_word`（兼容别名，语义相同）
+    const confirmWord = String(body.confirm_word ?? body.confirm ?? '')
+    if (confirmWord !== 'RESTORE') return fail(reply, 'backup.restore_confirm_required', req.traceId)
+    if (body.scope !== undefined && body.scope !== 'platform') return fail(reply, 'request.param_invalid', req.traceId, { field: 'scope', note: '首期只支持 platform 全量恢复。' })
+    // api-spec §10.3：已有恢复在跑时返回 423，不排队、不并发
+    const running = [...tasks.values()].find((t) => t.type === 'backup.restore' && t.status === 'running')
+    if (running) return reply.code(423).send({ errorCode: 'restore.in_progress', message: '已有恢复任务在进行。', traceId: req.traceId, task_id: running.id, impact: '本次未开始，现有恢复不受影响。', nextStep: '等当前恢复结束；可用 GET /admin/restores/{id} 查看进度。' })
     const taskId = `task_${randomUUID().slice(0, 8)}`
     const stages = ['停止写入', '恢复数据库', '恢复文件与持久卷', '恢复门户授权/模板', '恢复底座记录与镜像', '逐项校验']
     const restoreTask: Task = { id: taskId, type: 'backup.restore', status: 'running', phase: 'stop_write', attempt: 1, max_attempts: 3, steps: stages.map((s, i) => ({ key: `s${i}`, label: s, status: i === 0 ? 'running' : 'pending' as const })), created_at: new Date().toISOString(), finished_at: null }
@@ -1071,6 +1187,20 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
       rememberIdempotency(req, 202, out)
       return { status: 202, body: out }
     })
+  })
+
+  /** api-spec §10.3：恢复进度（阶段/失败项，可重入查看） */
+  app.get('/api/v1/admin/restores/:id', async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const t = tasks.get(id)
+    if (!t || t.type !== 'backup.restore') return fail(reply, 'request.path_unknown', req.traceId, { note: '恢复任务不存在或已过期；首期不提供历史恢复列表。' })
+    return {
+      restore_id: t.id,
+      status: t.status,
+      stages: t.steps.map((s) => ({ key: s.key, label: s.label, status: s.status })),
+      failed_items: t.steps.filter((s) => s.status === 'failed').map((s) => s.label),
+      retryable: true,
+    }
   })
 
   app.get('/api/v1/sys/backup-status', async () => ({
@@ -1154,6 +1284,33 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   })
   app.options('/api/v1/files', async (_req, reply) => reply.code(204).header('Allow', 'GET, HEAD, OPTIONS').send())
 
+  /** api-spec §8.4：`/files:stat` 与 `/files:download`（试跑用只读替身数据） */
+  app.get('/api/v1/files/stat', async (req, reply) => {
+    const q = req.query as Record<string, string | undefined>
+    const fallback = projects.find((x) => visibleProject(req, x.id))
+    const p = visibleProject(req, q.project_id ?? fallback?.id ?? '')
+    if (!p) return fail(reply, 'project.not_found', req.traceId)
+    const checked = safePath(q.path ?? '/')
+    if (!checked.ok) return fail(reply, 'file.path_invalid', req.traceId, { path: q.path })
+    if (checked.path === '/missing') return fail(reply, 'file.not_found', req.traceId, { path: checked.path })
+    return { path: checked.path, name: checked.path.split('/').pop() || '/', type: 'file', size: 2_400_000, modified_at: '2026-11-19T02:00:00.000Z', readable: true, max_file_bytes: DEPLOY.maxFileBytes }
+  })
+
+  app.get('/api/v1/files/download', async (req, reply) => {
+    const q = req.query as Record<string, string | undefined>
+    const fallback = projects.find((x) => visibleProject(req, x.id))
+    const p = visibleProject(req, q.project_id ?? fallback?.id ?? '')
+    if (!p) return fail(reply, 'project.not_found', req.traceId)
+    const checked = safePath(q.path ?? '/')
+    if (!checked.ok) return fail(reply, 'file.path_invalid', req.traceId, { path: q.path })
+    if (checked.path === '/missing') return fail(reply, 'file.not_found', req.traceId, { path: checked.path })
+    const name = checked.path.split('/').pop() || 'download.bin'
+    return reply
+      .header('content-type', 'application/octet-stream')
+      .header('content-disposition', `attachment; filename="${name}"`)
+      .send('试跑替身文件内容（非真实应用文件，未接对象存储 ENV 未完成）\n')
+  })
+
   app.get('/api/v1/admin/backups', async (req, reply) => {
     const scenario = (req.query as Record<string, string | undefined>).scenario ?? req.scenario
     const items = [
@@ -1200,13 +1357,14 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     if (req.actor!.role !== 'sysadmin') return fail(reply, 'authz.forbidden', req.traceId, { required: 'system:resource' })
     const body = (req.body ?? {}) as { items?: { env_id: string; reason: string }[]; confirm?: boolean; confirm_text?: string }
     const items = Array.isArray(body.items) ? body.items : []
-    const allowed = new Set(Object.values(CLEANUP_REASONS))
     if (items.length === 0) return fail(reply, 'request.param_invalid', req.traceId, { field: 'items' })
     const expectedText = `清理 ${items.length} 个异常预览`
     if (body.confirm !== true || body.confirm_text !== expectedText) {
       return fail(reply, 'cleanup.confirm_required', req.traceId, { expected_confirm_text: expectedText, note: '需要二次确认，确认文案必须与所选数量一致。' })
     }
-    const outside = items.filter((i) => !allowed.has(i.reason as never) || !abnormalPreviews.some((a) => a.id === i.env_id))
+    // api-spec §10.5 只约束「范围」（必须是三种异常情形之一）+ 逐项原因文本；
+    // 范围以服务端候选集合为准，不信任前端传入的 reason 枚举值。
+    const outside = items.filter((i) => !i.env_id || typeof i.reason !== 'string' || !i.reason.trim() || !abnormalPreviews.some((a) => a.id === i.env_id))
     if (outside.length > 0) return fail(reply, 'cleanup.scope_invalid', req.traceId, { items: outside.map((i) => i.env_id), note: '只能清理无主/残留/无法自删的异常预览，正常预览不允许清理。' })
     const succeeded: { env_id: string; branch: string; reason: string; freed_bytes: number }[] = []
     const failed: { env_id: string; errorCode: string; message: string; nextStep: string }[] = []
@@ -1286,10 +1444,15 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   // GAP-02：一期不提供外部机器调用入口
   app.get('/api/v1/machine-access', async (_req, reply) => fail(reply, 'request.path_unknown', 'trc_gap02', { note: '一期不提供外部机器调用已部署应用的入口（GAP-02）。' }))
 
-  app.post('/api/v1/confirmations/:id/approve', async (req, reply) => {
+  const confirmAction = (verdict: 'approved' | 'rejected') => async (req: FastifyRequest, reply: FastifyReply) => {
     if (mcpKeyOf(req)) return fail(reply, 'mcp.self_approve_denied', req.traceId)
-    return write(req, reply, { action: 'deploy.confirm', target: { kind: 'confirmation', id: (req.params as { id: string }).id } }, () => ({ body: { status: 'approved', note: '确认后才创建真实发布任务；审计两条（请求/确认）。' } }))
-  })
+    const id = (req.params as { id: string }).id
+    return write(req, reply, { action: verdict === 'approved' ? 'deploy.confirm' : 'deploy.reject', target: { kind: 'confirmation', id } }, () => ({
+      body: { status: verdict, note: verdict === 'approved' ? '确认后才创建真实发布任务；审计两条（请求/确认）。' : '已拒绝；不创建发布任务，环境不变。' },
+    }))
+  }
+  app.post('/api/v1/confirmations/:id/approve', confirmAction('approved'))
+  app.post('/api/v1/confirmations/:id/reject', confirmAction('rejected'))
 
   // ---------------- 未匹配 ----------------
   app.setNotFoundHandler((req, reply) => fail(reply, 'request.path_unknown', req.traceId ?? 'trc_unknown', { path: req.url, note: '该端点未在 api-spec v1.0 中定义' }))

@@ -185,6 +185,12 @@ export const ERROR_TABLE = {
     impact: '看不到任何项目内容。',
     nextStep: '回到 Dashboard；30 天内可让管理员恢复已删除项目。',
   },
+  'project.slug_immutable': {
+    status: 422,
+    what: '项目标识（slug）不可修改。',
+    impact: '本次未修改任何字段。',
+    nextStep: '只修改项目名称；标识在建项目时确定，用于域名与目录路径。',
+  },
   'project.name_conflict': {
     status: 409,
     what: '项目名已被使用。',
