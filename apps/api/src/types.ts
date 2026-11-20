@@ -5,6 +5,8 @@ export type Relation = 'owner' | 'granted' | 'group' | 'none'
 export interface User {
   user_id: string
   display_name: string
+  /** 飞书账号（P-14 列表列；不是凭据，试跑用占位） */
+  feishu_account: string
   role: 'user' | 'admin' | 'sysadmin'
   status: 'active' | 'disabled'
   groups: string[]

@@ -4,7 +4,7 @@
  * - 二次确认（勾选 → 输入清理原因/再次确认），逐条审计
  * - 逐条结果展示；失败要说明残留与下一步，不静默
  */
-import type { AbnormalPreview } from '@/api/types'
+import type { AbnormalPreview, CleanupFailure, CleanupResult } from '@/api/types'
 
 export const ABNORMAL_CASES = ['disabled_owner', 'deleted_project', 'undeletable'] as const
 export type AbnormalCase = (typeof ABNORMAL_CASES)[number]
@@ -60,22 +60,36 @@ export function confirm(state: CleanupConfirmState): CleanupConfirmState {
 }
 
 export interface CleanupSummary {
-  done: number
-  residual: number
+  succeeded: number
+  failed: number
   total: number
   text: string
   nextStep: string
+  failures: CleanupFailure[]
 }
 
-export function summarize(rows: { result: string }[]): CleanupSummary {
-  const done = rows.filter((r) => r.result === 'deleted').length
-  const residual = rows.length - done
+/** api-spec §10.6：二次确认文案必须与所选数量一致（服务端逐字比对） */
+export function confirmTextFor(count: number): string {
+  return `清理 ${count} 个异常预览`
+}
+
+/** 提交项：只带 env_id + 原因；情形以服务端候选为准，不在前端伪造枚举 */
+export function submitItems(state: CleanupConfirmState, items: AbnormalPreview[]): { env_id: string; reason: string }[] {
+  const reason = state.reason.trim()
+  return state.selected
+    .filter((id) => items.some((i) => i.id === id && isSelectable(i)))
+    .map((id) => ({ env_id: id, reason }))
+}
+
+export function summarize(res: CleanupResult): CleanupSummary {
+  const total = res.succeeded.length + res.failed.length
   return {
-    done,
-    residual,
-    total: rows.length,
-    text: `共 ${rows.length} 条：成功 ${done} 条，残留 ${residual} 条。`,
-    nextStep: residual > 0 ? '残留项仍占用资源与预览名额；请重试，或由系统管理员按运维流程处理持久卷。' : '全部清理完成，预览名额已释放。',
+    succeeded: res.succeeded.length,
+    failed: res.failed.length,
+    total,
+    text: `共 ${total} 条：成功 ${res.succeeded.length} 条，失败 ${res.failed.length} 条（释放 ${res.succeeded.reduce((n, r) => n + r.freed_bytes, 0)} 字节）。`,
+    nextStep: res.failed.length > 0 ? '失败项仍占用资源与预览名额；可按下一步提示重试，或由系统管理员按运维流程处理持久卷。' : '全部清理完成，预览名额已释放，每条都已写审计。',
+    failures: res.failed,
   }
 }
 

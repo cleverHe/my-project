@@ -209,16 +209,24 @@ export interface LogLine {
   redacted?: boolean
 }
 
+export interface UsagePart {
+  kind: 'db' | 'volumes' | 'files' | 'logs'
+  label: string
+  bytes: number
+}
+
+/** api-spec §8.3：分区用量 + 阈值；与 Dashboard 卡片 quota 同口径（同一 used/limit/ratio） */
 export interface UsageBreakdown {
-  cpu: { used: number; limit: number }
-  memory_mb: { used: number; limit: number }
-  disk: {
-    used_bytes: number
-    limit_bytes: number
-    parts: { key: 'db_volume' | 'persistent_volume' | 'files' | 'logs'; label: string; used_bytes: number }[]
-  }
+  project_id: string
+  used_bytes: number
+  limit_bytes: number
+  ratio: number
+  period_minutes: number
+  parts: UsagePart[]
+  threshold: { warning: number; action: 'hard_reject'; exceeded: boolean }
   collected_at: string
   stale: boolean
+  stale_note: string | null
 }
 
 export interface DbInfo {
@@ -259,11 +267,16 @@ export interface AuditRow {
   at: string
   actor: string
   action: string
+  /** 对象：`<类型>:<ID>`（BFF 由 target_kind/target_id 拼出） */
   object: string
   result: 'success' | 'failed'
   source_ip: string
+  /** 变更摘要：BFF 的 detail 字段（审计只有追加写，不做前后镜像） */
+  change?: string
   before?: string
   after?: string
+  trace_id?: string
+  error_code?: string | null
 }
 
 export interface AlertRow {
@@ -273,6 +286,18 @@ export interface AlertRow {
   at: string
   handled: boolean
   text: string
+}
+
+/** 人员权限页可勾选项：只来自服务端角色模型（P-14） */
+export interface AssignableOp {
+  code: string
+  label: string
+  enabled: boolean
+}
+
+export interface AdminUsersPage extends Page<AdminUser> {
+  /** 按角色下发的可分配操作位；缺失时页面不得自行编造矩阵 */
+  assignable_by_role?: Record<Role, AssignableOp[]>
 }
 
 export interface AdminUser {
@@ -321,6 +346,28 @@ export interface AbnormalPreview {
   case: 'disabled_owner' | 'deleted_project' | 'undeletable'
   last_active_at: string
   size_bytes: number
+}
+
+export interface CleanupItemResult {
+  env_id: string
+  branch: string
+  reason: string
+  freed_bytes: number
+}
+
+export interface CleanupFailure {
+  env_id: string
+  errorCode: string
+  message: string
+  nextStep: string
+}
+
+/** api-spec §10.6：批量清理的逐条结果（不是一次性 done/residual 汇总） */
+export interface CleanupResult {
+  requested: number
+  succeeded: CleanupItemResult[]
+  failed: CleanupFailure[]
+  audit_ids: string[]
 }
 
 export interface RoleModel {

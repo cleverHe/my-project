@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** P-03 创建项目向导：名称 → 模板 → 数据库 → 完成；模板不可用可回退空白模板；+ 创建中进度 */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import type { Task, TemplateInfo } from '@/api/types'
@@ -33,7 +33,9 @@ const selected = computed(() => templates.value.find((t) => t.id === templateId.
 
 async function loadTemplates() {
   try {
-    const res = await api.templates()
+    // 故障注入也走同一请求：模板库不可用时页面必须给出真实回退入口（QA-DEF-05）
+    const res = await api.templates(ui.state.scenario)
+    // 适配层已按契约只保留可发布版本；这里再筛一次防止 Mock/旧响应混入下线模板
     templates.value = res.data.items.filter((t) => t.status === 'published')
   } catch (e) {
     templateError.value = e
@@ -42,12 +44,15 @@ async function loadTemplates() {
 }
 
 function useBlankFallback() {
-  const blank = templates.value.find((t) => t.id === 'tpl_blank')
-  if (blank) {
-    templateId.value = blank.id
-    fallbackToBlank.value = true
-    ui.push('warn', '已回退到空白模板', ['仍会注入规范与 4 个门户 Skill；不会建立空仓库。', '该模板未识别构建/健康检查预设，发布前需手动选择。'])
-  }
+  // 列表加载失败/模板已下线时也必须能继续：空白模板是固定可用项（不是伪造模板）
+  templateId.value = 'tpl_blank'
+  fallbackToBlank.value = true
+  const detail = templates.value.some((t) => t.id === 'tpl_blank')
+    ? '该模板未识别构建/健康检查预设，发布前需手动选择。'
+    : '模板库当前不可用；仍按空白模板创建（含规范与 Skill），恢复后再补充构建预设。'
+  ui.push('warn', '已回退到空白模板', ['仍会注入规范与 4 个门户 Skill；不会建立空仓库。', detail])
+  // 「使用空白模板」不是只改选中的假按钮：直接进到数据库步（QA-DEF-05 回归）
+  step.value = 3
 }
 
 async function submit() {
@@ -70,6 +75,17 @@ async function submit() {
     creating.value = false
   }
 }
+
+watch(
+  () => ui.state.scenario,
+  () => {
+    if (step.value >= 2 && !createdId.value) void loadTemplates()
+  },
+)
+// 进入模板步时重新拉一次：故障分支在第一步就切了也能生效
+watch(step, (s) => {
+  if (s === 2 && !createdId.value) void loadTemplates()
+})
 
 onMounted(loadTemplates)
 </script>

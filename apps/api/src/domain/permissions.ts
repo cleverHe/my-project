@@ -30,7 +30,8 @@ export const ROLE_OPS: Record<Role, string[]> = {
     'admin:param:concurrency',
     'admin:param:queue',
   ],
-  sysadmin: ['sys:setting', 'sys:cleanup', 'sys:restore', 'sys:role', 'sys:template', 'admin:audit', 'admin:settings:read', 'project:read', 'project:spec', 'system:backup', 'system:resource'],
+  // 系统管理员不代发（无 deploy:create），但读类默认边界是「数据权限内所有人」（api-spec §3.3）
+  sysadmin: ['sys:setting', 'sys:cleanup', 'sys:restore', 'sys:role', 'sys:template', 'admin:audit', 'admin:settings:read', 'project:read', 'project:spec', 'file:read', 'log:read', 'system:backup', 'system:resource'],
 }
 
 export const ROLE_OPS_REQUIRED: Record<string, string> = {
@@ -85,8 +86,131 @@ const OP_RULES: { method: string; re: RegExp; op: string }[] = [
   { method: 'GET', re: /^\/sys\/backup-status$/, op: 'sys:setting' },
 ]
 
+/** 角色模型变更点：只有模型内已存在且 enabled 的操作位才可能被判定通过 */
 export function hasOp(role: Role, op: string): boolean {
   return ROLE_OPS[role].includes(op)
+}
+
+/** ------------------------------------------------------------------
+ * 角色权限模型（P-18）：模块 × 操作矩阵。
+ * `defaultRoleMatrix()` 只给初值；可变状态与保存/回读在 `repo/store.ts`，
+ * 服务端鉴权只认「模型 enabled ∩ 人员操作位」，见 store.hasOp。
+ * ------------------------------------------------------------------ */
+export interface RoleOpRow {
+  code: string
+  label: string
+  enabled: boolean
+}
+
+export interface RoleModuleRow {
+  module: string
+  ops: RoleOpRow[]
+}
+
+export interface RoleRow {
+  role: Role
+  label: string
+  modules: RoleModuleRow[]
+}
+
+export interface RoleMatrix {
+  version: string
+  updated_at: string
+  roles: RoleRow[]
+}
+
+export const ROLE_LABEL: Record<Role, string> = { user: '普通用户', admin: '管理员', sysadmin: '系统管理员' }
+
+/** 操作位 → 模块（页面矩阵的分组；不改变权限码本身） */
+const MODULE_OF: Record<string, string> = {
+  'project:create': '项目',
+  'project:read': '项目',
+  'project:update': '项目',
+  'project:delete': '项目',
+  'project:transfer': '项目',
+  'project:spec': '项目',
+  'deploy:create': '发布与环境',
+  'deploy:rollback': '发布与环境',
+  'preview:create': '发布与环境',
+  'preview:delete': '发布与环境',
+  'file:read': '文件与日志',
+  'log:read': '文件与日志',
+  'log:ai': '文件与日志',
+  'share:create': '协作',
+  'share:read': '协作',
+  'grant:read': '协作',
+  'grant:write': '协作',
+  'mcp:manage': '协作',
+  'admin:people': '人员与权限',
+  'admin:group': '人员与权限',
+  'admin:platform': '人员与权限',
+  'admin:audit': '审计',
+  'admin:settings:read': '系统参数',
+  'admin:param:concurrency': '系统参数',
+  'admin:param:queue': '系统参数',
+  'sys:setting': '系统管理',
+  'sys:cleanup': '系统管理',
+  'sys:restore': '系统管理',
+  'sys:role': '系统管理',
+  'sys:template': '系统管理',
+  'system:backup': '系统管理',
+  'system:resource': '系统管理',
+}
+
+/** 操作位 → 中文标签（页面矩阵与人员权限页共用；模型外的码不出现） */
+export const OP_LABEL: Record<string, string> = {
+  'project:create': '创建项目',
+  'project:read': '查看项目/环境/用量',
+  'project:update': '改名 / 更新接入包',
+  'project:delete': '软删除 / 恢复项目',
+  'project:transfer': '转让拥有者',
+  'project:spec': '项目资源规格（仅系统管理员）',
+  'deploy:create': '发起正式发布',
+  'deploy:rollback': '回滚',
+  'preview:create': '创建预览',
+  'preview:delete': '删除预览',
+  'file:read': '文件浏览 / 下载',
+  'log:read': '查看日志',
+  'log:ai': 'AI 日志分析外发',
+  'share:create': '生成 / 撤销分享',
+  'share:read': '查看分享',
+  'grant:read': '查看授权',
+  'grant:write': '增加 / 撤销授权',
+  'mcp:manage': '管理自己的 MCP Key',
+  'admin:people': '分配人员操作权限',
+  'admin:group': '管理项目组',
+  'admin:platform': '查看平台视图 / 告警',
+  'admin:audit': '查看 / 导出审计',
+  'admin:settings:read': '查看系统参数',
+  'admin:param:concurrency': '调整并发构建数（唯一例外）',
+  'admin:param:queue': '调整排队上限（唯一例外）',
+  'sys:setting': '系统设置',
+  'sys:cleanup': '清理异常预览',
+  'sys:restore': '恢复',
+  'sys:role': '定义角色权限模型',
+  'sys:template': '维护模板库',
+  'system:backup': '备份 / 恢复任务',
+  'system:resource': '全局资源 / 数据卷清理',
+}
+
+const MODULE_ORDER = ['项目', '发布与环境', '文件与日志', '协作', '人员与权限', '审计', '系统参数', '系统管理']
+
+/** 初值矩阵：来自 ROLE_OPS；version 为模型版本号（保存后由 store 更新） */
+export function defaultRoleMatrix(version = 'v1', updatedAt = '2026-11-12T02:00:00.000Z'): RoleMatrix {
+  const roles = (['user', 'admin', 'sysadmin'] as Role[]).map((role) => {
+    const groups = new Map<string, RoleOpRow[]>()
+    for (const code of ROLE_OPS[role]) {
+      const module = MODULE_OF[code] ?? '其他'
+      const list = groups.get(module) ?? []
+      list.push({ code, label: OP_LABEL[code] ?? code, enabled: true })
+      groups.set(module, list)
+    }
+    const modules = [...groups.entries()]
+      .sort((a, b) => MODULE_ORDER.indexOf(a[0]) - MODULE_ORDER.indexOf(b[0]))
+      .map(([module, ops]) => ({ module, ops }))
+    return { role, label: ROLE_LABEL[role], modules }
+  })
+  return { version, updated_at: updatedAt, roles }
 }
 
 /** 返回该请求要求的权限位；null 表示按项目数据关系 + 权限系统判定 */

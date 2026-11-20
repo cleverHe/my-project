@@ -59,4 +59,22 @@ describe('角色与数据关系分离', () => {
     expect(sysNav).toContain('sys-settings')
     expect(can('user', 'sys:cleanup')).toBe(false)
   })
+
+  it('前端操作位码与 BFF 角色模型同一套（不再用 env:*/grant:manage 旧码）', () => {
+    // 用服务端 admin 的实际 operations 判定导航：管理员必须能看到「人员权限」「审计」
+    const serverAdmin = [
+      'project:create', 'project:read', 'deploy:create', 'preview:create', 'preview:delete',
+      'file:read', 'log:read', 'share:create', 'mcp:manage', 'admin:people',
+      'admin:settings:read', 'admin:group', 'admin:platform', 'admin:audit',
+      'admin:param:concurrency', 'admin:param:queue',
+    ]
+    const nav = visibleNav('admin', serverAdmin).map((n) => n.key)
+    expect(nav).toContain('admin-people')
+    expect(nav).toContain('admin-audit')
+    // 默认表也不能再出现旧码，否则 Mock 下与服务端判定分叉
+    expect(roleOperations('user')).toContain('preview:create')
+    expect(roleOperations('user')).not.toContain('env:create')
+    expect(roleOperations('admin')).toContain('admin:people')
+    expect(roleOperations('sysadmin')).toContain('system:backup')
+  })
 })

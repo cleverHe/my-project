@@ -46,21 +46,23 @@ onMounted(load)
     <section class="panel">
       <div class="panel-head">
         <h2>资源用量</h2>
-        <span class="hint">{{ usageStaleNotice('2026-11-20 09:15', Boolean(usage?.stale)) }}</span>
+        <span class="hint">{{ usageStaleNotice(usage?.collected_at ?? '2026-11-20 09:15', Boolean(usage?.stale)) }}</span>
       </div>
       <div v-if="state.project" class="row cards">
         <div class="mini">
-          <span class="hint">CPU</span>
-          <strong>{{ (state.project.spec.cpu * 0.6).toFixed(2) }} / {{ state.project.spec.cpu }} C</strong>
+          <span class="hint">CPU（规格上限）</span>
+          <strong>{{ state.project.spec.cpu }} C</strong>
+          <span class="hint">本期未采集 CPU 用量</span>
         </div>
         <div class="mini">
-          <span class="hint">内存</span>
-          <strong>{{ Math.round(state.project.spec.memory_mb * 0.55) }} / {{ state.project.spec.memory_mb }} MB</strong>
+          <span class="hint">内存（规格上限）</span>
+          <strong>{{ state.project.spec.memory_mb }} MB</strong>
+          <span class="hint">本期未采集内存用量</span>
         </div>
         <div class="mini">
           <span class="hint">磁盘（含日志）</span>
-          <strong>{{ formatBytes(state.project.quota.used_bytes) }} / {{ formatBytes(state.project.quota.limit_bytes) }}</strong>
-          <span class="hint">{{ formatPercent(state.project.quota.ratio) }}</span>
+          <strong>{{ formatBytes(usage?.used_bytes ?? state.project.quota.used_bytes) }} / {{ formatBytes(usage?.limit_bytes ?? state.project.quota.limit_bytes) }}</strong>
+          <span class="hint">{{ formatPercent(usage?.ratio ?? state.project.quota.ratio) }}</span>
         </div>
       </div>
       <p :class="msg.level === 'normal' ? 'okbox' : 'warnbox'">{{ msg.text }} {{ msg.action }}</p>
@@ -75,14 +77,17 @@ onMounted(load)
           <tr><th>分项</th><th class="num">占用</th><th class="num">占项目配额</th></tr>
         </thead>
         <tbody>
-          <tr v-for="p in usage?.disk.parts ?? []" :key="p.key">
+          <tr v-for="p in usage?.parts ?? []" :key="p.kind">
             <td>{{ p.label }}</td>
-            <td class="num">{{ formatBytes(p.used_bytes) }}</td>
-            <td class="num">{{ formatPercent(p.used_bytes / (state.project?.quota.limit_bytes ?? 1)) }}</td>
+            <td class="num">{{ formatBytes(p.bytes) }}</td>
+            <td class="num">{{ formatPercent(p.bytes / (usage?.limit_bytes || 1)) }}</td>
           </tr>
         </tbody>
       </table>
-      <p class="hint">日志转存保留 30 天并计入配额；不提供 S3 / 对象存储 API。{{ COPY.noS3Api }}</p>
+      <p class="hint">
+        合计 {{ formatBytes(usage?.used_bytes ?? 0) }} = 项目配额占用；达到 {{ formatPercent(usage?.threshold.warning ?? 0.8) }} 触发告警，超过上限按 {{ usage?.threshold.action === 'hard_reject' ? '硬拒绝' : '硬拒绝' }} 处理。
+        日志转存保留 30 天并计入配额；不提供 S3 / 对象存储 API。{{ COPY.noS3Api }}
+      </p>
     </section>
 
     <section class="panel">

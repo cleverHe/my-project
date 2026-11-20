@@ -6,9 +6,9 @@ import type { AbnormalPreview, ProjectCard } from '@/api/types'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import ErrorNotice from '@/components/ErrorNotice.vue'
 import { backupAttemptLabel, escalateLevel } from '@/domain/deploy'
-import { formatBytes } from '@/domain/format'
+import { formatBytes, formatTimeDual } from '@/domain/format'
 import { COPY } from '@/domain/text'
-import { arm, caseLabel, confirm as confirmStep, initConfirm, isSelectable, selectableRows, summarize } from '@/flows/cleanupFlow'
+import { arm, caseLabel, confirm as confirmStep, confirmTextFor, initConfirm, isSelectable, selectableRows, submitItems, summarize } from '@/flows/cleanupFlow'
 import { useUi } from '@/stores/ui'
 
 const ui = useUi()
@@ -22,6 +22,7 @@ const summary = ref<ReturnType<typeof summarize> | null>(null)
 const restoreOpen = ref(false)
 const restoreWord = ref('')
 const backupStatus = ref<Record<string, unknown> | null>(null)
+const now = new Date()
 
 const project = computed(() => projects.value.find((p) => p.id === selectedProject.value) ?? null)
 const failedBackupLabel = backupAttemptLabel({ attempts: 4, max_attempts: 3, result: 'failed' })
@@ -84,9 +85,11 @@ async function secondConfirm() {
     return
   }
   try {
-    const res = await api.cleanupPreviews(confirmState.value.selected, ui.state.scenario)
-    summary.value = summarize(res.data.rows)
-    ui.push(res.data.residual ? 'warn' : 'success', '清理完成', [summary.value.text, summary.value.nextStep])
+    const items = submitItems(confirmState.value, abnormal.value)
+    // 二次确认文案由所选数量决定，服务端逐字比对；不匹配就不发请求
+    const res = await api.cleanupPreviews(items, confirmTextFor(items.length), ui.state.scenario)
+    summary.value = summarize(res.data)
+    ui.push(summary.value.failed > 0 ? 'warn' : 'success', '清理完成', [summary.value.text, summary.value.nextStep])
     confirmState.value = initConfirm()
     await load()
   } catch (e) {
@@ -160,7 +163,7 @@ onMounted(load)
             <td>{{ a.project_name }}</td>
             <td class="mono">{{ a.branch }}</td>
             <td>{{ caseLabel(a.case) }}</td>
-            <td>{{ a.last_active_at }}</td>
+            <td>{{ formatTimeDual(a.last_active_at, now) }}</td>
             <td class="num">{{ formatBytes(a.size_bytes) }}</td>
           </tr>
         </tbody>
@@ -173,8 +176,19 @@ onMounted(load)
           <button class="btn danger" @click="secondConfirm">第二步：执行清理</button>
         </template>
       </div>
-      <div v-if="summary" :class="summary.residual ? 'warnbox' : 'okbox'">
-        {{ summary.text }} {{ summary.nextStep }}
+      <div v-if="summary" :class="summary.failed > 0 ? 'warnbox' : 'okbox'">
+        <p>{{ summary.text }} {{ summary.nextStep }}</p>
+        <table v-if="summary.failures.length > 0">
+          <thead><tr><th>环境</th><th>错误码</th><th>原因</th><th>下一步</th></tr></thead>
+          <tbody>
+            <tr v-for="f in summary.failures" :key="f.env_id">
+              <td class="mono">{{ f.env_id }}</td>
+              <td class="mono">{{ f.errorCode }}</td>
+              <td>{{ f.message }}</td>
+              <td>{{ f.nextStep }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </section>
 

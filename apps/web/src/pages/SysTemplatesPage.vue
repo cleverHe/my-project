@@ -12,7 +12,8 @@ const error = ref<unknown>(null)
 
 async function load() {
   try {
-    items.value = (await api.templates()).data.items
+    // 管理页看全量（含已下线历史版本）；/templates 只返回已发布
+    items.value = (await api.sysTemplates()).data.items
   } catch (e) {
     error.value = e
   }
@@ -54,6 +55,7 @@ onMounted(load)
           </tr>
         </tbody>
       </table>
+      <p class="hint">状态是真实值：已下线只标 deprecated，不删除历史版本，也不影响已建项目；下线后新建向导立即不再出现该模板。</p>
       <p class="hint">模板与规范更新不得覆盖用户已修改的文件；冲突应列出并要求对齐（见项目「接入与规范」页）。</p>
     </section>
   </div>

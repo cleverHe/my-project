@@ -10,37 +10,43 @@ import { COPY } from './text'
 export type OpCode =
   | 'project:create'
   | 'project:read'
+  | 'project:update'
+  | 'project:delete'
+  | 'project:transfer'
   | 'project:spec'
-  | 'env:create'
-  | 'env:delete'
   | 'deploy:create'
   | 'deploy:rollback'
-  | 'grant:manage'
-  | 'share:manage'
+  | 'preview:create'
+  | 'preview:delete'
   | 'file:read'
   | 'log:read'
   | 'log:ai'
-  | 'mcp:key'
-  | 'admin:user'
+  | 'share:create'
+  | 'share:read'
+  | 'grant:read'
+  | 'grant:write'
+  | 'mcp:manage'
+  | 'admin:people'
   | 'admin:group'
-  | 'admin:project:transfer'
-  | 'admin:project:restore'
   | 'admin:platform'
+  | 'admin:audit'
+  | 'admin:settings:read'
   | 'admin:param:concurrency'
   | 'admin:param:queue'
-  | 'audit:read'
   | 'sys:role'
   | 'sys:template'
   | 'sys:setting'
   | 'sys:cleanup'
-  | 'sys:backup'
   | 'sys:restore'
+  | 'system:backup'
+  | 'system:resource'
 
 /** 角色默认操作集（系统管理员定义的模型可再分配；这里是默认展示口径） */
+// 与 BFF 角色模型同一套操作位码（此前前端用 env:*/grant:manage 等旧码，导致接 BFF 时导航与按钮判定与 server 不一致）
 const ROLE_OPS: Record<Role, OpCode[]> = {
-  user: ['project:read', 'project:create', 'env:create', 'env:delete', 'deploy:create', 'deploy:rollback', 'grant:manage', 'share:manage', 'file:read', 'log:read', 'log:ai', 'mcp:key'],
-  admin: ['project:read', 'admin:user', 'admin:group', 'admin:platform', 'admin:param:concurrency', 'admin:param:queue', 'admin:project:transfer', 'admin:project:restore', 'grant:manage', 'share:manage', 'audit:read'],
-  sysadmin: ['project:read', 'sys:role', 'sys:template', 'sys:setting', 'sys:cleanup', 'project:spec', 'sys:backup', 'sys:restore', 'audit:read'],
+  user: ['project:create', 'project:read', 'deploy:create', 'preview:create', 'preview:delete', 'file:read', 'log:read', 'share:create', 'mcp:manage'],
+  admin: ['project:create', 'project:read', 'deploy:create', 'preview:create', 'preview:delete', 'file:read', 'log:read', 'share:create', 'mcp:manage', 'admin:people', 'admin:settings:read', 'admin:group', 'admin:platform', 'admin:audit', 'admin:param:concurrency', 'admin:param:queue'],
+  sysadmin: ['sys:setting', 'sys:cleanup', 'sys:restore', 'sys:role', 'sys:template', 'admin:audit', 'admin:settings:read', 'project:read', 'project:spec', 'file:read', 'log:read', 'system:backup', 'system:resource'],
 }
 
 /** 只有这两项是管理员的系统参数例外（GAP-04） */
@@ -64,14 +70,14 @@ export function denyReason(op: OpCode): string {
     case 'project:spec':
       return COPY.specSysadminOnly
     case 'sys:setting':
-    case 'sys:backup':
+    case 'system:backup':
     case 'sys:restore':
     case 'sys:role':
     case 'sys:template':
       return '该能力仅系统管理员可用；管理员不可修改系统参数、角色模型与模板库。'
     case 'sys:cleanup':
       return '异常预览清理仅系统管理员可执行。'
-    case 'admin:user':
+    case 'admin:people':
     case 'admin:group':
     case 'admin:platform':
       return '该能力仅管理员可用（人员权限、项目组、平台视图）。'
@@ -79,7 +85,7 @@ export function denyReason(op: OpCode): string {
       return '发布需本人在项目内具备发布操作权限。'
     case 'deploy:rollback':
       return '回滚需本人在项目内具备回滚操作权限。'
-    case 'grant:manage':
+    case 'grant:write':
       return '授权管理仅项目拥有者或管理员可操作。'
     default:
       return '当前角色没有该操作权限，需要管理员在角色权限模型中分配。'
@@ -143,10 +149,10 @@ export interface NavItem {
 export const NAV: NavItem[] = [
   { key: 'dashboard', label: 'Dashboard', to: '/dashboard', role: ['user', 'admin', 'sysadmin'] },
   { key: 'wizard', label: '创建项目', to: '/wizard', role: ['user'] },
-  { key: 'admin-people', label: '人员权限', to: '/admin/people', role: ['admin'], op: 'admin:user' },
+  { key: 'admin-people', label: '人员权限', to: '/admin/people', role: ['admin'], op: 'admin:people' },
   { key: 'admin-groups', label: '项目组', to: '/admin/groups', role: ['admin'], op: 'admin:group' },
   { key: 'admin-platform', label: '平台视图', to: '/admin/platform', role: ['admin'], op: 'admin:platform' },
-  { key: 'admin-audit', label: '审计', to: '/admin/audit', role: ['admin', 'sysadmin'], op: 'audit:read' },
+  { key: 'admin-audit', label: '审计', to: '/admin/audit', role: ['admin', 'sysadmin'], op: 'admin:audit' },
   { key: 'sys-roles', label: '角色权限模型', to: '/sys/roles', role: ['sysadmin'], op: 'sys:role' },
   { key: 'sys-templates', label: '模板库', to: '/sys/templates', role: ['sysadmin'], op: 'sys:template' },
   { key: 'sys-settings', label: '系统设置', to: '/sys/settings', role: ['sysadmin'], op: 'sys:setting' },

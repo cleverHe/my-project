@@ -45,8 +45,29 @@ async function load() {
   }
 }
 
-function refuseWrite(action: string) {
-  ui.push('info', `${action}：本页不提供`, [COPY.filesReadOnly, '如需改文件，请通过 Git 提交并在预览验证。'])
+const downloading = ref<string | null>(null)
+
+/** 真实下载：经 BFF 只读代理拿到字节流；浏览器触发保存（不发 JSON、不改文件） */
+async function download(f: FileEntry) {
+  if (f.type === 'dir') return
+  downloading.value = f.path
+  try {
+    const res = await api.downloadFile(id, envId.value, f.path, ui.state.scenario)
+    const url = URL.createObjectURL(res.blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = res.filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    // 立刻 revoke 可能把还没开始的下载掐断（Chromium 上偶发），等一拍再释放
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    ui.push('success', '下载已开始', [`文件：${res.filename}`, `字节数：${res.bytes}${res.mock ? '（试跑替身内容，非真实应用文件）' : ''}`])
+  } catch (e) {
+    error.value = e
+  } finally {
+    downloading.value = null
+  }
 }
 
 onMounted(load)
@@ -89,9 +110,9 @@ watch(kind, load)
             <td class="num">{{ f.type === 'dir' ? '—' : formatBytes(f.size_bytes) }}</td>
             <td>{{ formatTimeDual(f.modified_at, now) }}</td>
             <td>
-              <button class="btn" :disabled="f.type === 'dir'" @click="ui.push('info', '下载（Mock）', ['试跑不产生真实下载；真实环境由 BFF 流式转发。'])">下载</button>
-              <button class="btn ghost" @click="refuseWrite('删除')">删除</button>
-              <button class="btn ghost" @click="refuseWrite('在线编辑')">编辑</button>
+              <button class="btn" :disabled="f.type === 'dir' || downloading === f.path" @click="download(f)">
+                {{ downloading === f.path ? '下载中…' : '下载' }}
+              </button>
             </td>
           </tr>
           <tr v-if="entries.length === 0">

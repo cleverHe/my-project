@@ -3,21 +3,119 @@
  * 真实实现需接 PostgreSQL + 底座 API；ENV01–ENV09 未完成前不得声称已联调。
  */
 import type { AbnormalPreview, AuditRow, Environment, GroupRow, Project, ShareLink, Task, User } from '../types.js'
-import { ROLE_OPS } from '../domain/permissions.js'
+import { defaultRoleMatrix, ROLE_OPS, type Role, type RoleMatrix } from '../domain/permissions.js'
 
 export const T0 = '2026-11-20T09:20:00.000Z'
 const GATE_OPEN = { paused: false, reason: null, paused_since: null, resume_mechanism: 'T-08_undefined' } as const
 
-export const users: User[] = [
-  { user_id: 'usr_trial_lin', display_name: '林小满', role: 'user', status: 'active', groups: ['grp_platform'], operations: ROLE_OPS.user },
-  { user_id: 'usr_trial_zhou', display_name: '周敏', role: 'admin', status: 'active', groups: ['grp_platform'], operations: ROLE_OPS.admin },
-  { user_id: 'usr_trial_zheng', display_name: '郑巍', role: 'sysadmin', status: 'active', groups: [], operations: ROLE_OPS.sysadmin },
-  { user_id: 'usr_trial_chen', display_name: '陈可', role: 'user', status: 'active', groups: ['grp_platform'], operations: ROLE_OPS.user },
-  { user_id: 'usr_trial_leave', display_name: '离职账号', role: 'user', status: 'disabled', groups: [], operations: [] },
+/** 人员操作位初值：每人一份副本，避免与 ROLE_OPS 共享引用 */
+const USER_SEED: User[] = [
+  { user_id: 'usr_trial_lin', display_name: '林小满', feishu_account: 'lin.xiaoman', role: 'user', status: 'active', groups: ['grp_platform'], operations: [...ROLE_OPS.user] },
+  { user_id: 'usr_trial_zhou', display_name: '周敏', feishu_account: 'zhou.min', role: 'admin', status: 'active', groups: ['grp_platform'], operations: [...ROLE_OPS.admin] },
+  { user_id: 'usr_trial_zheng', display_name: '郑巍', feishu_account: 'zheng.wei', role: 'sysadmin', status: 'active', groups: [], operations: [...ROLE_OPS.sysadmin] },
+  { user_id: 'usr_trial_chen', display_name: '陈可', feishu_account: 'chen.ke', role: 'user', status: 'active', groups: ['grp_platform'], operations: [...ROLE_OPS.user] },
+  { user_id: 'usr_trial_leave', display_name: '离职账号', feishu_account: 'left.user', role: 'user', status: 'disabled', groups: [], operations: [] },
 ]
+
+/** 试跑内存仓储：人员操作位与角色模型都是可变状态（P-14 / P-18） */
+export const users: User[] = structuredClone(USER_SEED)
 
 export function userById(id: string): User | undefined {
   return users.find((u) => u.user_id === id)
+}
+
+/** ------------------------------------------------------------------
+ * 角色权限模型（P-18）试跑存储
+ * - 保存后立即生效：鉴权只看「模型 enabled ∩ 人员操作位」
+ * - 人员操作位只能是模型内已有的项（P-14），模型外不出现也不可授予
+ * ------------------------------------------------------------------ */
+export const roleModel: RoleMatrix = defaultRoleMatrix()
+
+/** 某角色在模型内被启用（enabled=true）的操作位 */
+export function enabledOpsOf(role: Role, matrix: RoleMatrix = roleModel): string[] {
+  return matrix.roles
+    .filter((r) => r.role === role)
+    .flatMap((r) => r.modules.flatMap((m) => m.ops.filter((o) => o.enabled).map((o) => o.code)))
+}
+
+/** 模型内定义过的操作位（无论是否启用）——人员权限页只能勾选这些 */
+export function definedOpsOf(role: Role, matrix: RoleMatrix = roleModel): string[] {
+  return matrix.roles.filter((r) => r.role === role).flatMap((r) => r.modules.flatMap((m) => m.ops.map((o) => o.code)))
+}
+
+/** 人员权限页的可勾选项：按角色列出模型内已定义的操作位（含标签与是否启用） */
+export function assignableOpsByRole(matrix: RoleMatrix = roleModel): Record<Role, { code: string; label: string; enabled: boolean }[]> {
+  return Object.fromEntries(
+    matrix.roles.map((r) => [r.role, r.modules.flatMap((m) => m.ops.map((o) => ({ code: o.code, label: o.label, enabled: o.enabled })))]),
+  ) as Record<Role, { code: string; label: string; enabled: boolean }[]>
+}
+
+/** 本人最终操作位：人员操作位 ∩ 模型启用项；停用账号一律为空 */
+export function effectiveOps(user: User): string[] {
+  if (user.status !== 'active') return []
+  const enabled = new Set(enabledOpsOf(user.role))
+  return user.operations.filter((op) => enabled.has(op))
+}
+
+/** 服务端唯一判定入口：审计、路由守卫都用它（不能只看静态 ROLE_OPS） */
+export function userHasOp(userId: string, op: string): boolean {
+  const u = userById(userId)
+  return u ? effectiveOps(u).includes(op) : false
+}
+
+export function setUserOps(userId: string, ops: string[]): User | undefined {
+  const u = userById(userId)
+  if (!u) return undefined
+  u.operations = [...ops]
+  return u
+}
+
+export type SaveMatrixResult =
+  | { ok: true; version: string; affected: Record<Role, number> }
+  | { ok: false; reason: string; details?: Record<string, unknown> }
+
+/** 保存角色模型：只接受模型内已存在的操作位；启用状态可在启/停之间切换，不可新增权限码。 */
+export function saveRoleModel(input: unknown): SaveMatrixResult {
+  const body = (input ?? {}) as { roles?: { role?: string; modules?: { module?: string; ops?: { code?: string; enabled?: boolean }[] }[] }[] }
+  if (!Array.isArray(body.roles) || body.roles.length !== 3) return { ok: false, reason: '必须且只能提交三类应用角色的完整模型。' }
+  const roles = body.roles
+  const seen = new Set<string>()
+  for (const r of roles) {
+    const role = r?.role as Role | undefined
+    if (!role || !['user', 'admin', 'sysadmin'].includes(role)) return { ok: false, reason: '角色只能是 user / admin / sysadmin。' }
+    seen.add(role)
+    const allowed = new Set(definedOpsOf(role))
+    const ops = (r?.modules ?? []).flatMap((m) => m?.ops ?? [])
+    const unknownCodes = ops.filter((o) => !o?.code || !allowed.has(o.code)).map((o) => o.code ?? '(missing)')
+    if (unknownCodes.length > 0) {
+      return { ok: false, reason: '提交了角色模型里不存在的操作位。', details: { role, unknownCodes, note: '不能通过保存请求新增权限码。' } }
+    }
+    if (ops.length !== allowed.size) {
+      return { ok: false, reason: '提交的操作位不完整。', details: { role, expected: allowed.size, got: ops.length } }
+    }
+  }
+  if (seen.size !== 3) return { ok: false, reason: '必须提交三种应用角色。' }
+
+  const now = new Date().toISOString()
+  const next = structuredClone(roleModel)
+  for (const r of roles) {
+    const role = r.role as Role
+    const target = next.roles.find((x) => x.role === role)!
+    for (const m of r.modules ?? []) {
+      const tMod = target.modules.find((x) => x.module === m.module)
+      if (!tMod) continue
+      for (const op of m.ops ?? []) {
+        const tOp = tMod.ops.find((x) => x.code === op.code)
+        if (tOp) tOp.enabled = op.enabled === true
+      }
+    }
+  }
+  roleModel.roles = next.roles
+  roleModel.version = `v${Date.now()}`
+  roleModel.updated_at = now
+  const affected = { user: 0, admin: 0, sysadmin: 0 } as Record<Role, number>
+  for (const u of users) if (u.status === 'active') affected[u.role] += 1
+  return { ok: true, version: roleModel.version, affected }
 }
 
 function env(partial: Partial<Environment> & Pick<Environment, 'id' | 'project_id' | 'kind' | 'slug'>): Environment {
@@ -133,6 +231,12 @@ export function resetStore() {
   idempotency.clear()
   shareLinks.splice(0, shareLinks.length)
   abnormalPreviews.splice(0, abnormalPreviews.length, ...structuredClone(ABNORMAL_SEED))
+  users.splice(0, users.length, ...structuredClone(USER_SEED))
+  const fresh = defaultRoleMatrix()
+  roleModel.version = fresh.version
+  roleModel.updated_at = fresh.updated_at
+  roleModel.roles = fresh.roles
+  templates.splice(0, templates.length, ...structuredClone(TEMPLATE_SEED))
   const grp = groups[0]
   if (grp) grp.status = 'active'
   Object.assign(settings, structuredClone(SETTINGS_SEED))
@@ -187,18 +291,44 @@ export const platform = {
   dokploy_ok: true,
 }
 
-export const templates = [
-  { id: 'tpl_ai_chat', name: 'AI 对话应用', stack: 'Node + Vue + BFF（Q29 平台约定）', available: true, note: '含规范与 4 个门户 MCP Skill' },
-  { id: 'tpl_ai_report', name: 'AI 报告生成', stack: 'Node + Vue + BFF（Q29 平台约定）', available: true, note: '含规范与 4 个门户 MCP Skill' },
-  { id: 'tpl_blank', name: '空白模板', stack: '最小可运行 demo', available: true, note: '回退时使用，不会静默替换已选模板' },
+/**
+ * 门户模板库元数据（P-19 / api-spec §5.6）。
+ * `status` 用契约口径 active/deprecated：active=已发布可用，deprecated=已下线（历史保留）。
+ * 不是平台生成应用模板（Q29）的代码范围。
+ */
+export interface TemplateRow {
+  id: string
+  name: string
+  stack: string
+  shape: 'static' | 'api' | 'fullstack' | 'blank'
+  version: string
+  status: 'active' | 'deprecated'
+  projects_used: number
+  has_demo: boolean
+  has_spec: boolean
+  has_skills: boolean
+  files: string[]
+  skills: string[]
+  build_preset: string
+  health_preset: 'healthz' | 'root' | 'tcp'
+  credential_scan: 'clean' | 'blocked'
+  note: string
+}
+
+const TEMPLATE_SEED: TemplateRow[] = [
+  { id: 'tpl_ai_chat', name: 'AI 对话应用', stack: 'Node + Vue + BFF（Q29 平台约定）', shape: 'fullstack', version: 'v1.0.0', status: 'active', projects_used: 6, has_demo: true, has_spec: true, has_skills: true, files: ['AGENTS.md', 'CLAUDE.md', 'docs/PLATFORM.md', '.deploy/mcp.json', 'skills/'], skills: ['查状态', '看日志', '发预览', '查部署记录'], build_preset: 'node-vue-bff', health_preset: 'healthz', credential_scan: 'clean', note: '含规范与 4 个门户 MCP Skill' },
+  { id: 'tpl_ai_report', name: 'AI 报告生成', stack: 'Node + Vue + BFF（Q29 平台约定）', shape: 'api', version: 'v2.1.0', status: 'active', projects_used: 3, has_demo: true, has_spec: true, has_skills: true, files: ['AGENTS.md', 'CLAUDE.md', 'docs/PLATFORM.md', '.deploy/mcp.json', 'skills/'], skills: ['查状态', '看日志', '发预览', '查部署记录'], build_preset: 'node-vue-bff', health_preset: 'root', credential_scan: 'clean', note: '含规范与 4 个门户 MCP Skill' },
+  { id: 'tpl_blank', name: '空白模板', stack: '最小可运行 demo（无）', shape: 'blank', version: 'v1.0.0', status: 'active', projects_used: 1, has_demo: false, has_spec: true, has_skills: true, files: ['AGENTS.md', 'CLAUDE.md', 'docs/PLATFORM.md', '.deploy/mcp.json', 'skills/'], skills: ['查状态', '看日志', '发预览', '查部署记录'], build_preset: '未识别 · 需用户选择', health_preset: 'tcp', credential_scan: 'clean', note: '回退时使用，不会静默替换已选模板；只含规范与 Skill' },
 ]
+
+export const templates: TemplateRow[] = structuredClone(TEMPLATE_SEED)
 
 export const me = {
   user_id: 'usr_trial_lin',
   display_name: '林小满',
   role: 'user' as const,
   groups: ['grp_platform'],
-  operations: ROLE_OPS.user,
+  operations: [...ROLE_OPS.user],
   session_expires_at: '2026-11-20T17:20:00.000Z',
   mock: true,
 }

@@ -45,7 +45,8 @@ const state = reactive<SessionState>(readTrial())
 
 export function useSession() {
   const role = computed<Role>(() => state.trialRole ?? state.me?.role ?? 'user')
-  const ops = computed<string[]>(() => (state.trialRole ? roleOperations(state.trialRole) : state.me?.operations ?? []))
+  // 服务端给了操作位就以服务端为准（模型 ∩ 人员操作位）；只有 Mock/无服务端会话时才用默认表
+  const ops = computed<string[]>(() => (state.me?.operations?.length ? state.me.operations : state.trialRole ? roleOperations(state.trialRole) : []))
 
   function adopt(me: Me) {
     state.me = me

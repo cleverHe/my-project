@@ -1,21 +1,32 @@
 <script setup lang="ts">
 /** P-13 人员权限：三类应用角色 + 操作权限；权限撤销 ≤30 秒 */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
-import type { AdminUser } from '@/api/types'
+import type { AdminUser, AssignableOp, Role } from '@/api/types'
 import ErrorNotice from '@/components/ErrorNotice.vue'
 import { useUi } from '@/stores/ui'
 
 const ui = useUi()
 const users = ref<AdminUser[]>([])
+const assignableByRole = ref<Record<Role, AssignableOp[]> | null>(null)
 const error = ref<unknown>(null)
 const editing = ref<AdminUser | null>(null)
 const draft = ref<string[]>([])
 
+/** 可分配项只来自服务端角色模型（P-14）：模型外的码不出现、也不可授予 */
+const assignable = computed(() => {
+  const role = editing.value?.role
+  if (!role || !assignableByRole.value) return [] as AssignableOp[]
+  return assignableByRole.value[role] ?? []
+})
+
 async function load() {
   error.value = null
   try {
-    users.value = (await api.adminUsers()).data.items
+    // /sys/roles 只对系统管理员开放（P-18）；管理员用随人员列表下发的可分配项（P-14）
+    const u = await api.adminUsers()
+    users.value = u.data.items
+    assignableByRole.value = u.data.assignable_by_role ?? null
   } catch (e) {
     error.value = e
   }
@@ -75,10 +86,14 @@ onMounted(load)
 
     <section v-if="editing" class="panel">
       <div class="panel-head"><h2>分配操作权限：{{ editing.display_name }}</h2><button class="btn ghost" @click="editing = null">关闭</button></div>
-      <div class="ops">
-        <label v-for="op in ['project:read','project:create','deploy:create','deploy:rollback','grant:manage','share:manage','file:read','log:read','log:ai','mcp:key']" :key="op" class="checkbox">
-          <input type="checkbox" :checked="draft.includes(op)" @change="toggle(op)" />
-          {{ op }}
+      <div v-if="!assignableByRole" class="warnbox">服务端未返回可分配项，暂不能分配；刷新后重试。</div>
+      <div v-else-if="assignable.length === 0" class="warnbox">该角色在当前权限模型里没有被定义的操作位。</div>
+      <div v-else class="ops">
+        <label v-for="op in assignable" :key="op.code" class="checkbox" :class="{ disabled: !op.enabled }">
+          <input type="checkbox" :disabled="!op.enabled" :checked="draft.includes(op.code)" @change="toggle(op.code)" />
+          {{ op.label }}
+          <span class="badge mono">{{ op.code }}</span>
+          <span v-if="!op.enabled" class="hint">模型已关闭</span>
         </label>
       </div>
       <div class="row"><button class="btn primary" @click="save">保存</button><span class="hint">撤销 ≤30 秒生效；变更写审计。</span></div>
@@ -89,7 +104,10 @@ onMounted(load)
 <style scoped>
 .ops {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 6px;
+}
+.checkbox.disabled {
+  opacity: 0.55;
 }
 </style>

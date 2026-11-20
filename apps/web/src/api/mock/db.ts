@@ -56,52 +56,19 @@ export const me: Me = {
   user_id: userLin.user_id,
   display_name: userLin.display_name,
   role: 'user',
+  // 与 BFF 角色模型同一套操作位码（Mock 只做展示，不能另造一套）
   operations: [
-    'project:read',
-    'project:create',
-    'env:create',
-    'env:delete',
-    'deploy:create',
-    'deploy:rollback',
-    'grant:manage',
-    'share:manage',
-    'file:read',
-    'log:read',
-    'log:ai',
-    'mcp:key',
+    'project:create', 'project:read', 'deploy:create', 'preview:create', 'preview:delete', 'file:read', 'log:read', 'share:create', 'mcp:manage',
   ],
   feishu_status: 'active',
 }
 
 /** 三类应用角色（不是第四类；拥有者/被授权人/项目组是数据关系） */
 export const roleOperations: Record<Me['role'], string[]> = {
-  user: me.operations.slice(),
-  admin: [
-    'project:read',
-    'admin:user',
-    'admin:group',
-    'admin:platform',
-    'admin:param:concurrency',
-    'admin:param:queue',
-    'admin:project:transfer',
-    'admin:project:restore',
-    'grant:manage',
-    'share:manage',
-    'audit:read',
-  ],
-  sysadmin: [
-    'project:read',
-    'sys:role',
-    'sys:template',
-    'sys:setting',
-    'sys:cleanup',
-    'project:spec',
-    'sys:backup',
-    'sys:restore',
-    'audit:read',
-  ],
+  user: ['project:create', 'project:read', 'deploy:create', 'preview:create', 'preview:delete', 'file:read', 'log:read', 'share:create', 'mcp:manage'],
+  admin: ['project:create', 'project:read', 'deploy:create', 'preview:create', 'preview:delete', 'file:read', 'log:read', 'share:create', 'mcp:manage', 'admin:people', 'admin:group', 'admin:platform', 'admin:audit', 'admin:settings:read', 'admin:param:concurrency', 'admin:param:queue'],
+  sysadmin: ['project:read', 'project:spec', 'file:read', 'log:read', 'admin:audit', 'admin:settings:read', 'sys:setting', 'sys:cleanup', 'sys:restore', 'sys:role', 'sys:template', 'system:backup', 'system:resource'],
 }
-
 function envPreview(id: string, projectId: string, branch: string, slug: string, state: Environment['state'], extra: Partial<MockEnv> = {}): MockEnv {
   return {
     id,
@@ -461,39 +428,299 @@ export const alerts: AlertRow[] = [
 ]
 
 export const roleModel: RoleModel = {
-  version: 'model-7',
-  updated_at: '2026-11-12T02:00:00.000Z',
-  roles: [
+  "version": "v1",
+  "updated_at": "2026-11-12T02:00:00.000Z",
+  "roles": [
     {
-      role: 'user',
-      label: '普通用户',
-      modules: [
-        { module: '项目', ops: [{ code: 'project:create', label: '创建项目', enabled: true }, { code: 'project:read', label: '查看项目', enabled: true }] },
-        { module: '发布', ops: [{ code: 'deploy:create', label: '发起正式发布', enabled: true }, { code: 'deploy:rollback', label: '回滚', enabled: true }] },
-        { module: '协作', ops: [{ code: 'grant:manage', label: '授权/撤销', enabled: true }, { code: 'share:manage', label: '分享/撤销分享', enabled: true }] },
-      ],
+      "role": "user",
+      "label": "普通用户",
+      "modules": [
+        {
+          "module": "项目",
+          "ops": [
+            {
+              "code": "project:create",
+              "label": "创建项目",
+              "enabled": true
+            },
+            {
+              "code": "project:read",
+              "label": "查看项目/环境/用量",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "module": "发布与环境",
+          "ops": [
+            {
+              "code": "deploy:create",
+              "label": "发起正式发布",
+              "enabled": true
+            },
+            {
+              "code": "preview:create",
+              "label": "创建预览",
+              "enabled": true
+            },
+            {
+              "code": "preview:delete",
+              "label": "删除预览",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "module": "文件与日志",
+          "ops": [
+            {
+              "code": "file:read",
+              "label": "文件浏览 / 下载",
+              "enabled": true
+            },
+            {
+              "code": "log:read",
+              "label": "查看日志",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "module": "协作",
+          "ops": [
+            {
+              "code": "share:create",
+              "label": "生成 / 撤销分享",
+              "enabled": true
+            },
+            {
+              "code": "mcp:manage",
+              "label": "管理自己的 MCP Key",
+              "enabled": true
+            }
+          ]
+        }
+      ]
     },
     {
-      role: 'admin',
-      label: '管理员',
-      modules: [
-        { module: '人员与组', ops: [{ code: 'admin:user', label: '分配人员权限', enabled: true }, { code: 'admin:group', label: '管理项目组', enabled: true }] },
-        { module: '系统参数', ops: [{ code: 'admin:param:concurrency', label: '调整并发构建数（唯一例外）', enabled: true }, { code: 'admin:param:queue', label: '调整队列上限（唯一例外）', enabled: true }] },
-        { module: '审计', ops: [{ code: 'audit:read', label: '查看/导出审计', enabled: true }] },
-      ],
+      "role": "admin",
+      "label": "管理员",
+      "modules": [
+        {
+          "module": "项目",
+          "ops": [
+            {
+              "code": "project:create",
+              "label": "创建项目",
+              "enabled": true
+            },
+            {
+              "code": "project:read",
+              "label": "查看项目/环境/用量",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "module": "发布与环境",
+          "ops": [
+            {
+              "code": "deploy:create",
+              "label": "发起正式发布",
+              "enabled": true
+            },
+            {
+              "code": "preview:create",
+              "label": "创建预览",
+              "enabled": true
+            },
+            {
+              "code": "preview:delete",
+              "label": "删除预览",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "module": "文件与日志",
+          "ops": [
+            {
+              "code": "file:read",
+              "label": "文件浏览 / 下载",
+              "enabled": true
+            },
+            {
+              "code": "log:read",
+              "label": "查看日志",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "module": "协作",
+          "ops": [
+            {
+              "code": "share:create",
+              "label": "生成 / 撤销分享",
+              "enabled": true
+            },
+            {
+              "code": "mcp:manage",
+              "label": "管理自己的 MCP Key",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "module": "人员与权限",
+          "ops": [
+            {
+              "code": "admin:people",
+              "label": "分配人员操作权限",
+              "enabled": true
+            },
+            {
+              "code": "admin:group",
+              "label": "管理项目组",
+              "enabled": true
+            },
+            {
+              "code": "admin:platform",
+              "label": "查看平台视图 / 告警",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "module": "审计",
+          "ops": [
+            {
+              "code": "admin:audit",
+              "label": "查看 / 导出审计",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "module": "系统参数",
+          "ops": [
+            {
+              "code": "admin:settings:read",
+              "label": "查看系统参数",
+              "enabled": true
+            },
+            {
+              "code": "admin:param:concurrency",
+              "label": "调整并发构建数（唯一例外）",
+              "enabled": true
+            },
+            {
+              "code": "admin:param:queue",
+              "label": "调整排队上限（唯一例外）",
+              "enabled": true
+            }
+          ]
+        }
+      ]
     },
     {
-      role: 'sysadmin',
-      label: '系统管理员',
-      modules: [
-        { module: '角色模型', ops: [{ code: 'sys:role', label: '定义角色权限模型', enabled: true }] },
-        { module: '模板库', ops: [{ code: 'sys:template', label: '维护模板', enabled: true }] },
-        { module: '系统设置', ops: [{ code: 'sys:setting', label: '系统设置', enabled: true }, { code: 'project:spec', label: '项目资源规格', enabled: true }] },
-        { module: '清理', ops: [{ code: 'sys:cleanup', label: '清理异常预览', enabled: true }] },
-      ],
-    },
-  ],
-}
+      "role": "sysadmin",
+      "label": "系统管理员",
+      "modules": [
+        {
+          "module": "项目",
+          "ops": [
+            {
+              "code": "project:read",
+              "label": "查看项目/环境/用量",
+              "enabled": true
+            },
+            {
+              "code": "project:spec",
+              "label": "项目资源规格（仅系统管理员）",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "module": "文件与日志",
+          "ops": [
+            {
+              "code": "file:read",
+              "label": "文件浏览 / 下载",
+              "enabled": true
+            },
+            {
+              "code": "log:read",
+              "label": "查看日志",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "module": "审计",
+          "ops": [
+            {
+              "code": "admin:audit",
+              "label": "查看 / 导出审计",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "module": "系统参数",
+          "ops": [
+            {
+              "code": "admin:settings:read",
+              "label": "查看系统参数",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "module": "系统管理",
+          "ops": [
+            {
+              "code": "sys:setting",
+              "label": "系统设置",
+              "enabled": true
+            },
+            {
+              "code": "sys:cleanup",
+              "label": "清理异常预览",
+              "enabled": true
+            },
+            {
+              "code": "sys:restore",
+              "label": "恢复",
+              "enabled": true
+            },
+            {
+              "code": "sys:role",
+              "label": "定义角色权限模型",
+              "enabled": true
+            },
+            {
+              "code": "sys:template",
+              "label": "维护模板库",
+              "enabled": true
+            },
+            {
+              "code": "system:backup",
+              "label": "备份 / 恢复任务",
+              "enabled": true
+            },
+            {
+              "code": "system:resource",
+              "label": "全局资源 / 数据卷清理",
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+} as RoleModel
 
 export const mcpKey = reactiveKey()
 function reactiveKey() {
@@ -505,5 +732,5 @@ export const state = {
   paused: { kb: true, reason: 'daily_backup_failed' as const, since: '2026-11-20T02:40:00.000Z' },
   tasks: new Map<string, import('../types').Task>(),
   idempotent: new Map<string, unknown>(),
-  cleanupReports: [] as { at: string; operator: string; rows: { id: string; project: string; branch: string; case: string; result: string; reason: string }[] }[],
+  cleanupReports: [] as { at: string; operator: string; rows: { id: string; result: string }[] }[],
 }

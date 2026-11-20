@@ -18,6 +18,12 @@ const page = ref(1)
 
 const shown = computed(() => (filter.value ? rows.value.filter((r) => r.action.includes(filter.value) || r.actor.includes(filter.value)) : rows.value))
 
+/** 审计只有追加写：有前后值显示变更，没有则显示服务端给出的变更摘要（detail），否则 — */
+function changeOf(r: AuditRow): string {
+  if (r.before && r.after) return `${r.before} → ${r.after}`
+  return r.change ?? '—'
+}
+
 async function load() {
   error.value = null
   try {
@@ -31,13 +37,33 @@ async function load() {
   }
 }
 
+function downloadText(text: string, filename: string) {
+  const blob = new Blob([text], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  // Chromium 在 click 后立即 revoke 会截断下载
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 async function exportAs(format: 'csv' | 'json') {
   try {
-    const res = await api.exportAudit(format)
-    ui.push('success', `已导出 ${res.data.format.toUpperCase()}`, [
-      `共 ${res.data.rows} 条。`,
-      format === 'csv' ? `CSV 固定 ${columns.value} 列；具体列名待业务确认（T-01），本次导出不编造列名。` : 'JSON 同步导出，字段与接口一致。',
-    ])
+    if (format === 'csv') {
+      const res = await api.exportAuditCsv(ui.state.scenario)
+      const lines = res.text.trim().split(/\r?\n/)
+      const count = Math.max(lines.length - 1, 0)
+      downloadText(res.text, res.filename ?? 'audit.csv')
+      ui.push('success', '已导出 CSV 文件', [
+        `共 ${count} 条；${lines[0]?.split(',').length ?? columns.value} 列（列名待 T-01 业务确认，不编造最终列名）。`,
+      ])
+      return
+    }
+    const res = await api.exportAudit('json')
+    ui.push('success', '已导出 JSON', [`共 ${res.data.rows} 条。`, 'JSON 同步导出，字段与接口一致。'])
   } catch (e) {
     error.value = e
   }
@@ -61,7 +87,7 @@ onMounted(load)
     <section class="panel">
       <div class="panel-head"><h2>记录（{{ shown.length }} / {{ total }}）</h2><span class="hint">写操作审计失败时，该操作按失败处理。</span></div>
       <table>
-        <thead><tr><th>时间</th><th>操作人</th><th>操作</th><th>对象</th><th>结果</th><th>来源 IP</th><th>变更</th></tr></thead>
+        <thead><tr><th>时间</th><th>操作人</th><th>操作</th><th>对象</th><th>结果</th><th>来源 IP</th><th>变更摘要</th></tr></thead>
         <tbody>
           <tr v-for="r in shown" :key="r.id">
             <td>{{ formatDateTime(r.at) }}</td>
@@ -70,7 +96,7 @@ onMounted(load)
             <td>{{ r.object }}</td>
             <td>{{ r.result === 'success' ? '成功' : '失败' }}</td>
             <td class="mono">{{ r.source_ip }}</td>
-            <td class="hint">{{ r.before ? `${r.before} → ${r.after}` : '—' }}</td>
+            <td class="hint">{{ changeOf(r) }}</td>
           </tr>
         </tbody>
       </table>

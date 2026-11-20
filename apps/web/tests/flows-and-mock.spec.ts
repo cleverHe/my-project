@@ -5,7 +5,7 @@ import { applyDeploySuccess, dispatch } from '@/api/mock/handlers'
 import { explainError, formatError } from '@/domain/errors'
 import { formatBytes, formatDateTime, formatRelative, previewDomain, shortSha } from '@/domain/format'
 import { quotaLevel, quotaMessage, usageStaleNotice } from '@/domain/quota'
-import { arm, assertNoNormalPreview, caseLabel, confirm, initConfirm, isSelectable, selectableRows, summarize } from '@/flows/cleanupFlow'
+import { arm, assertNoNormalPreview, caseLabel, confirm, confirmTextFor, initConfirm, isSelectable, selectableRows, submitItems, summarize } from '@/flows/cleanupFlow'
 
 describe('GAP-05 异常预览清理', () => {
   it('只有三种情形可选，正常预览不在范围', () => {
@@ -33,10 +33,22 @@ describe('GAP-05 异常预览清理', () => {
     expect(s.error).toContain('正常预览')
   })
 
-  it('逐条汇总成功/残留', () => {
-    const sum = summarize([{ result: 'deleted' }, { result: 'still_residual' }])
-    expect(sum.text).toContain('成功 1 条，残留 1 条')
+  it('逐条汇总成功/失败（契约 CleanupResult）', () => {
+    const sum = summarize({
+      requested: 2,
+      succeeded: [{ env_id: 'env_abn_1', branch: 'feat/refund', reason: '账号停用后清理', freed_bytes: 1024 }],
+      failed: [{ env_id: 'env_abn_3', errorCode: 'cleanup.per_item_failed', message: '持久卷释放失败', nextStep: '重试' }],
+      audit_ids: ['aud_1', 'aud_2'],
+    })
+    expect(sum.text).toContain('成功 1 条，失败 1 条')
     expect(sum.nextStep).toContain('名额')
+    expect(sum.failures[0]?.env_id).toBe('env_abn_3')
+  })
+
+  it('二次确认文案按数量生成，提交项只带 env_id + 原因', () => {
+    expect(confirmTextFor(2)).toBe('清理 2 个异常预览')
+    const s = { ...initConfirm(), stage: 'armed' as const, selected: ['env_abn_1'], reason: '账号停用后清理' }
+    expect(submitItems(s, abnormalPreviews)).toEqual([{ env_id: 'env_abn_1', reason: '账号停用后清理' }])
   })
 })
 
@@ -145,5 +157,33 @@ describe('格式化与阈值', () => {
     expect(quotaMessage(0.9, 'user').action).toContain('系统管理员')
     expect(quotaMessage(0.9, 'sysadmin').action).toContain('系统设置')
     expect(usageStaleNotice('2026-11-20 09:15', true)).toContain('可能滞后')
+  })
+})
+
+describe('P-14 人员权限页可取到可分配项（不调 /sys/roles）', () => {
+  const auth = { csrfToken: 't', userId: 'usr_trial_zhou' }
+
+  it('GET /admin/users 随列表下发 assignable_by_role（含标签与启用状态）', () => {
+    const r = dispatch({ method: 'GET', path: '/admin/users', auth, traceId: 'trc_t' })
+    expect(r.ok).toBe(true)
+    if (!r.ok) throw new Error('admin users should load')
+    const body = r.data as { assignable_by_role: Record<string, { code: string; label: string; enabled: boolean }[]> }
+    const adminOps = body.assignable_by_role.admin!
+    expect(adminOps.some((o) => o.code === 'admin:people' && o.label.length > 0)).toBe(true)
+    expect(adminOps.every((o) => typeof o.enabled === 'boolean')).toBe(true)
+  })
+})
+
+describe('审计 CSV 导出返回真实文本（api-spec §1.1）', () => {
+  const auth = { csrfToken: 't', userId: 'usr_trial_zhou' }
+  it('Mock 导出是 CSV 文本，不是把列名包成 JSON', () => {
+    const r = dispatch({ method: 'GET', path: '/audit/export', query: { format: 'csv' }, auth, traceId: 'trc_t' })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(typeof r.data).toBe('string')
+    const text = r.data as string
+    const lines = text.split('\r\n')
+    expect(lines[0]!.split(',')).toHaveLength(12)
+    expect(lines.length).toBeGreaterThan(1)
   })
 })

@@ -76,6 +76,57 @@ export function ulid(prefix = 'id'): string {
   return `${prefix}_${t}${r}${String(seq).padStart(3, '0')}`
 }
 
+export interface TextResponse {
+  text: string
+  filename: string | null
+  traceId: string
+  status: number
+}
+
+/**
+ * 导出类接口（text/csv）：不能走 JSON 解析。
+ * 仍然唯一出口，错误同样转 ApiError；不重试（导出有频率限制）。
+ */
+export async function requestText(path: string, opts: RequestOptions = {}): Promise<TextResponse> {
+  const tid = traceId()
+  if (USE_MOCK) {
+    const mod = await mock()
+    await sleep(mod.mockLatency(opts.scenario))
+    const result = mod.dispatch({
+      method: 'GET',
+      path,
+      query: opts.query,
+      scenario: opts.scenario,
+      auth: authContext,
+      traceId: tid,
+    })
+    if (!result.ok) throw new ApiError(result.error, result.status)
+    return { text: typeof result.data === 'string' ? result.data : JSON.stringify(result.data), filename: null, traceId: tid, status: result.status }
+  }
+  const res = await fetch(`${API_BASE}${path}${buildQuery({ ...opts.query, scenario: opts.scenario })}`, {
+    method: 'GET',
+    headers: { Accept: 'text/csv, application/json', 'X-Request-Id': tid },
+    credentials: 'same-origin',
+  })
+  const text = await res.text()
+  if (!res.ok) {
+    let body: ApiErrorBody | null = null
+    try {
+      body = text ? (JSON.parse(text) as ApiErrorBody) : null
+    } catch {
+      body = null
+    }
+    if (body && typeof body.errorCode === 'string') throw new ApiError(body, res.status)
+    throw new ApiError(
+      { errorCode: 'request.unknown', message: '导出未被服务端正常处理。', nextStep: '重试一次；仍失败请把 traceId 给管理员。', traceId: res.headers.get('X-Trace-Id') ?? tid },
+      res.status,
+    )
+  }
+  const cd = res.headers.get('content-disposition') ?? ''
+  const m = /filename="?([^";]+)"?/.exec(cd)
+  return { text, filename: m ? m[1]! : null, traceId: res.headers.get('X-Trace-Id') ?? tid, status: res.status }
+}
+
 type MockHandler = typeof import('./mock/handlers')
 
 let mockModule: MockHandler | null = null
@@ -187,4 +238,56 @@ async function once<T>(path: string, opts: RequestOptions & { method: string }):
 
 function isGet(method: string): boolean {
   return method === 'GET'
+}
+
+/**
+ * 文件下载专用出口（GET 只读）。返回真实字节流，不把二进制当 JSON 解析。
+ * Mock 模式下由派发器返回 `{ filename, text }`，包装为 Blob 以保持页面同一代码路径。
+ */
+export async function requestBlob(
+  path: string,
+  opts: RequestOptions = {},
+): Promise<{ blob: Blob; filename: string; bytes: number; traceId: string; mock: boolean }> {
+  const tid = traceId()
+  if (USE_MOCK) {
+    const mod = await mock()
+    const result = mod.dispatch({
+      method: 'GET',
+      path,
+      body: opts.body,
+      query: opts.query,
+      scenario: opts.scenario,
+      idempotencyKey: opts.idempotencyKey,
+      auth: authContext,
+      traceId: tid,
+    })
+    if (!result.ok) throw new ApiError(result.error, result.status)
+    const d = result.data as { filename?: string; text?: string }
+    const text = d.text ?? ''
+    return { blob: new Blob([text], { type: 'application/octet-stream' }), filename: d.filename ?? 'download.bin', bytes: new Blob([text]).size, traceId: tid, mock: true }
+  }
+  const res = await fetch(`${API_BASE}${path}${buildQuery({ ...opts.query, scenario: opts.scenario })}`, {
+    method: 'GET',
+    headers: { Accept: 'application/octet-stream' },
+    credentials: 'same-origin',
+    signal: opts.signal,
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    let body: ApiErrorBody | null = null
+    try {
+      body = text ? (JSON.parse(text) as ApiErrorBody) : null
+    } catch {
+      body = null
+    }
+    if (body && typeof body.errorCode === 'string') throw new ApiError(body, res.status)
+    throw new ApiError(
+      { errorCode: 'request.unknown', message: '下载未被服务端正常处理。', nextStep: '重试一次；仍失败请把 traceId 给管理员。', traceId: res.headers.get('X-Trace-Id') ?? tid },
+      res.status,
+    )
+  }
+  const blob = await res.blob()
+  const disposition = res.headers.get('Content-Disposition') ?? ''
+  const m = /filename="?([^";]+)"?/.exec(disposition)
+  return { blob, filename: m?.[1] ?? 'download.bin', bytes: blob.size, traceId: res.headers.get('X-Trace-Id') ?? tid, mock: res.headers.get('X-Mock') === 'true' }
 }

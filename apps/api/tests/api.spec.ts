@@ -657,3 +657,326 @@ describe('api-spec 文件读取契约（§8.4）', () => {
     await app.close()
   })
 })
+
+/**
+ * 本轮开发自检修复（QA-DEF-05/07/08/09/10/11/12/13）。
+ * 说明：QA-DEF-05 在新旧清单里含义不同（旧 fix-plan = 项目组计数，本轮 = 模板/空白回退），
+ * 因此这里按「菜单 + 触发行为」命名用例，不靠编号断言。
+ */
+describe('开发自检修复：模板 / 下载 / 清理 / 角色模型 / 用量 / 审计日志', () => {
+  it('模板列表只返回已发布版本，空白模板可回退创建（QA-DEF-05）', async () => {
+    const { app, call } = await client()
+    const list = await call('GET', '/api/v1/templates')
+    expect(list.status).toBe(200)
+    const items = list.body.items as { id: string; status: string; has_demo: boolean; build_preset: string; version: string }[]
+    expect(items.every((t) => t.status === 'active')).toBe(true)
+    const blank = items.find((t) => t.id === 'tpl_blank')
+    expect(blank).toBeTruthy()
+    expect(typeof blank!.build_preset).toBe('string')
+    expect(typeof blank!.version).toBe('string')
+
+    // 模板库不可用（试跑故障注入）：列表请求失败而不是返回空数组，页面才有真实回退入口
+    const down = await call('GET', '/api/v1/templates?scenario=template_down')
+    expect(down.status).toBe(422)
+    expect(down.body.errorCode).toBe('project.template_unavailable')
+
+    // 模板下线后：向导列表不再出现，直接创建被拒（不能静默换成别的模板）
+    const off = await call('POST', '/api/v1/sys/templates/tpl_ai_chat:deprecate', {}, { 'idempotency-key': 'tpl-off-1' }, 'usr_trial_zheng')
+    expect(off.status).toBe(200)
+    const after = await call('GET', '/api/v1/templates')
+    expect((after.body.items as { id: string }[]).some((t) => t.id === 'tpl_ai_chat')).toBe(false)
+    const denied = await call('POST', '/api/v1/projects', { name: '下线模板项目', template_id: 'tpl_ai_chat', database: 'none' }, { 'idempotency-key': 'p-off-1' })
+    expect(denied.status).toBe(422)
+    expect(denied.body.errorCode).toBe('project.template_unavailable')
+
+    // 空白模板回退仍可创建（不建空仓库的语义由模板内容保证）
+    const ok = await call('POST', '/api/v1/projects', { name: '空白模板项目', template_id: 'tpl_blank', database: 'none' }, { 'idempotency-key': 'p-blank-1' })
+    expect(ok.status).toBe(201)
+    await app.close()
+  })
+
+  it('文件下载返回真实字节与 attachment 头，且拒绝越界路径（QA-DEF-07）', async () => {
+    const { app, call } = await client()
+    const dl = await app.inject({ method: 'GET', url: '/api/v1/files:download?project_id=prj_trial_ai_cs&env_id=env_trial_cs_prod&path=/report-2026-11.pdf', headers: { cookie: COOKIE } })
+    expect(dl.statusCode).toBe(200)
+    expect(String(dl.headers['content-type'])).toContain('application/octet-stream')
+    expect(String(dl.headers['content-disposition'])).toContain('attachment')
+    expect(dl.rawPayload.length).toBeGreaterThan(0)
+    const bad = await call('GET', '/api/v1/files:download?project_id=prj_trial_ai_cs&path=/../../etc/passwd')
+    expect(bad.status).toBe(400)
+    expect(bad.body.errorCode).toBe('file.path_invalid')
+    await app.close()
+  })
+
+  it('异常预览清理：契约 payload + 逐项结果 + 正常预览不可删（QA-DEF-08）', async () => {
+    const { app, call } = await client()
+    const cand = await call('GET', '/api/v1/admin/previews/cleanup-candidates', undefined, {}, 'usr_trial_zheng')
+    expect(cand.status).toBe(200)
+    const items = cand.body.items as { env_id: string; reason: string; size_bytes: number }[]
+    expect(items.length).toBe(3)
+    expect(items.map((i) => i.reason).sort()).toEqual(['not_removable_by_user', 'owner_disabled', 'project_deleted'])
+    expect(items.every((i) => typeof i.env_id === 'string' && i.size_bytes > 0)).toBe(true)
+
+    // 旧 payload（ids）按契约被拒
+    const legacy = await call('POST', '/api/v1/admin/previews:cleanup', { ids: [items[0]!.env_id] }, { 'idempotency-key': 'cl-0' }, 'usr_trial_zheng')
+    expect(legacy.status).toBe(400)
+    expect(legacy.body.errorCode).toBe('request.param_invalid')
+
+    // 正常预览不在范围
+    const normal = await call('POST', '/api/v1/admin/previews:cleanup', { items: [{ env_id: 'env_trial_cs_prev3', reason: 'owner_disabled' }], confirm: true, confirm_text: '清理 1 个异常预览' }, { 'idempotency-key': 'cl-1' }, 'usr_trial_zheng')
+    expect(normal.status).toBe(409)
+    expect(normal.body.errorCode).toBe('cleanup.scope_invalid')
+
+    // 未二次确认 → 拒绝
+    const noConfirm = await call('POST', '/api/v1/admin/previews:cleanup', { items: [{ env_id: items[0]!.env_id, reason: items[0]!.reason }] }, { 'idempotency-key': 'cl-2' }, 'usr_trial_zheng')
+    expect(noConfirm.status).toBe(422)
+    expect(noConfirm.body.errorCode).toBe('cleanup.confirm_required')
+
+    const ok = await call('POST', '/api/v1/admin/previews:cleanup', {
+      items: [{ env_id: items[0]!.env_id, reason: items[0]!.reason }, { env_id: items[1]!.env_id, reason: items[1]!.reason }],
+      confirm: true,
+      confirm_text: '清理 2 个异常预览',
+    }, { 'idempotency-key': 'cl-3' }, 'usr_trial_zheng')
+    expect(ok.status).toBe(200)
+    expect(ok.body.requested).toBe(2)
+    expect(ok.body.succeeded.length).toBe(2)
+    expect(ok.body.failed.length).toBe(0)
+    expect(ok.body.audit_ids.length).toBe(2)
+    const left = await call('GET', '/api/v1/admin/previews/cleanup-candidates', undefined, {}, 'usr_trial_zheng')
+    expect((left.body.items as unknown[]).length).toBe(1)
+    await app.close()
+  })
+
+  it('角色模型矩阵可读可存，回读为保存后的状态（QA-DEF-09）', async () => {
+    const { app, call } = await client()
+    const got = await call('GET', '/api/v1/sys/roles', undefined, {}, 'usr_trial_zheng')
+    expect(got.status).toBe(200)
+    const roles = got.body.roles as { role: string; label: string; modules: { module: string; ops: { code: string; label: string; enabled: boolean }[] }[] }[]
+    expect(roles.map((r) => r.role)).toEqual(['user', 'admin', 'sysadmin'])
+    expect(roles.every((r) => r.modules.length > 0 && r.modules.every((m) => m.ops.every((o) => typeof o.code === 'string' && typeof o.label === 'string' && typeof o.enabled === 'boolean')))).toBe(true)
+
+    const target = roles.find((r) => r.role === 'user')!
+    const op = target.modules.flatMap((m) => m.ops).find((o) => o.code === 'deploy:create')!
+    op.enabled = false
+    const put = await call('PUT', '/api/v1/sys/roles', { roles }, {}, 'usr_trial_zheng')
+    expect(put.status).toBe(200)
+    expect(typeof put.body.version).toBe('string')
+    expect(put.body.affected.user).toBe(2)
+
+    const back = await call('GET', '/api/v1/sys/roles', undefined, {}, 'usr_trial_zheng')
+    expect(back.body.version).toBe(put.body.version)
+    const userOps = (back.body.roles as typeof roles).find((r) => r.role === 'user')!.modules.flatMap((m) => m.ops)
+    expect(userOps.find((o) => o.code === 'deploy:create')!.enabled).toBe(false)
+    // 模型内不存在的权限码不能被新增
+    const bad = await call('PUT', '/api/v1/sys/roles', { roles: roles.map((r) => ({ ...r, modules: r.modules.map((m) => ({ ...m, ops: [...m.ops, { code: 'sys:invented', label: 'x', enabled: true }] })) })) }, {}, 'usr_trial_zheng')
+    expect(bad.status).toBe(400)
+    await app.close()
+  })
+
+  it('用量与 Dashboard 配额同口径：used/limit/ratio 与分项合计一致（QA-DEF-10）', async () => {
+    const { app, call } = await client()
+    const card = await call('GET', '/api/v1/projects/prj_trial_ai_cs')
+    const usage = await call('GET', '/api/v1/projects/prj_trial_ai_cs/usage')
+    expect(usage.status).toBe(200)
+    expect(usage.body.used_bytes).toBe(card.body.quota.used_bytes)
+    expect(usage.body.limit_bytes).toBe(card.body.quota.limit_bytes)
+    expect(usage.body.ratio).toBeCloseTo(card.body.quota.ratio, 4)
+    expect(usage.body.period_minutes).toBe(15)
+    expect(usage.body.threshold).toEqual({ warning: 0.8, action: 'hard_reject', exceeded: false })
+    const parts = usage.body.parts as { kind: string; bytes: number }[]
+    expect(parts.map((p) => p.kind).sort()).toEqual(['db', 'files', 'logs', 'volumes'])
+    expect(parts.reduce((n, p) => n + p.bytes, 0)).toBe(usage.body.used_bytes)
+    await app.close()
+  })
+
+  it('模板管理用真实状态：下线后从新建列表消失，再发布后恢复（QA-DEF-11）', async () => {
+    const { app, call } = await client()
+    const adminList = await call('GET', '/api/v1/sys/templates', undefined, {}, 'usr_trial_zheng')
+    expect(adminList.status).toBe(200)
+    const rows = adminList.body.items as { id: string; status: string; version: string; projects_used: number }[]
+    expect(rows.every((t) => typeof t.version === 'string' && typeof t.projects_used === 'number')).toBe(true)
+
+    const off = await call('POST', '/api/v1/sys/templates/tpl_ai_report:deprecate', {}, { 'idempotency-key': 'sys-tpl-1' }, 'usr_trial_zheng')
+    expect(off.status).toBe(200)
+    expect(off.body.template.status).toBe('deprecated')
+    const adminAfter = await call('GET', '/api/v1/sys/templates', undefined, {}, 'usr_trial_zheng')
+    expect((adminAfter.body.items as typeof rows).find((t) => t.id === 'tpl_ai_report')!.status).toBe('deprecated')
+    const userList = await call('GET', '/api/v1/templates')
+    expect((userList.body.items as { id: string }[]).some((t) => t.id === 'tpl_ai_report')).toBe(false)
+
+    const on = await call('POST', '/api/v1/sys/templates/tpl_ai_report:publish', {}, { 'idempotency-key': 'sys-tpl-2' }, 'usr_trial_zheng')
+    expect(on.status).toBe(200)
+    expect(on.body.template.status).toBe('active')
+    const restored = await call('GET', '/api/v1/templates')
+    expect((restored.body.items as { id: string }[]).some((t) => t.id === 'tpl_ai_report')).toBe(true)
+    await app.close()
+  })
+
+  it('日志与审计的消费字段齐全（text/seq 与 actor/target/ip）（QA-DEF-12）', async () => {
+    const { app, call } = await client()
+    const logs = await call('GET', '/api/v1/projects/prj_trial_ai_cs/logs?source=runtime')
+    expect(logs.status).toBe(200)
+    const lines = logs.body.items as { seq: number; at: string; level: string; text: string }[]
+    expect(lines.length).toBeGreaterThan(0)
+    expect(lines.every((l) => typeof l.seq === 'number' && typeof l.text === 'string' && l.text.length > 0)).toBe(true)
+    const archived = await call('GET', '/api/v1/projects/prj_trial_ai_cs/logs?source=archive')
+    expect(archived.body.source).toBe('history')
+
+    await call('POST', '/api/v1/environments/env_trial_cs_prev1:deploy', {}, { 'idempotency-key': 'log-aud-1' })
+    const audit = await call('GET', '/api/v1/audit', undefined, {}, 'usr_trial_zhou')
+    expect(audit.status).toBe(200)
+    expect(audit.body.csv_columns).toBe(12)
+    expect(audit.body.csv_columns_confirmed).toBe(false)
+    const row = (audit.body.items as { actor_name: string; action: string; target_kind: string; target_id: string; ip: string; detail: string }[])[0]!
+    expect(row.action).toBe('deploy.start')
+    expect(row.actor_name).toBe('林小满')
+    expect(row.target_id).toBe('env_trial_cs_prev1')
+    expect(row.ip).toBeTruthy()
+    await app.close()
+  })
+
+  it('角色模型与人员操作位真正生效：撤销即拒、恢复即通（QA-DEF-13）', async () => {
+    const { app, call } = await client()
+    const deploy = (key: string, user = 'usr_trial_lin') => call('POST', '/api/v1/environments/env_trial_cs_prev1:deploy', {}, { 'idempotency-key': key }, user)
+
+    const before = await deploy('rb-0')
+    expect(before.status).toBe(202)
+
+    const model = (await call('GET', '/api/v1/sys/roles', undefined, {}, 'usr_trial_zheng')).body.roles as {
+      role: string
+      modules: { module: string; ops: { code: string; label: string; enabled: boolean }[] }[]
+    }[]
+    const disable = (m: typeof model) => {
+      const userRole = m.find((r) => r.role === 'user')!
+      userRole.modules.flatMap((x) => x.ops).find((o) => o.code === 'deploy:create')!.enabled = false
+      return m
+    }
+    const enable = (m: typeof model) => {
+      const userRole = m.find((r) => r.role === 'user')!
+      userRole.modules.flatMap((x) => x.ops).find((o) => o.code === 'deploy:create')!.enabled = true
+      return m
+    }
+    const put1 = await call('PUT', '/api/v1/sys/roles', { roles: disable(structuredClone(model)) }, {}, 'usr_trial_zheng')
+    expect(put1.status).toBe(200)
+    const denied = await deploy('rb-1')
+    expect(denied.status).toBe(403)
+    expect(denied.body.errorCode).toBe('authz.forbidden')
+    expect(denied.body.details.required).toBe('deploy:create')
+    // /me 的操作位同步收缩（前端入口隐藏与服务端一致）
+    const me = await call('GET', '/api/v1/me')
+    expect((me.body.operations as string[]).includes('deploy:create')).toBe(false)
+
+    await call('PUT', '/api/v1/sys/roles', { roles: enable(structuredClone(model)) }, {}, 'usr_trial_zheng')
+    expect((await deploy('rb-2')).status).toBe(202)
+
+    // 人员操作位回收 / 恢复（管理员 P-14）
+    const opsNow = (await call('GET', '/api/v1/me')).body.operations as string[]
+    const patchOff = await call('PATCH', '/api/v1/admin/users/usr_trial_lin', { operations: opsNow.filter((o) => o !== 'deploy:create') }, {}, 'usr_trial_zhou')
+    expect(patchOff.status).toBe(200)
+    const deniedByUser = await deploy('rb-3')
+    expect(deniedByUser.status).toBe(403)
+    expect(deniedByUser.body.details.required).toBe('deploy:create')
+
+    const patchOn = await call('PATCH', '/api/v1/admin/users/usr_trial_lin', { operations: opsNow }, {}, 'usr_trial_zhou')
+    expect(patchOn.status).toBe(200)
+    expect((await deploy('rb-4')).status).toBe(202)
+
+    // 两次变更都写审计（角色模型 + 人员权限）
+    const audit = await call('GET', '/api/v1/audit', undefined, {}, 'usr_trial_zhou')
+    const actions = (audit.body.items as { action: string; actor_name: string }[]).map((a) => a.action)
+    expect(actions.filter((a) => a === 'sys.roles.update').length).toBeGreaterThanOrEqual(2)
+    expect(actions.filter((a) => a === 'admin.user.update').length).toBeGreaterThanOrEqual(2)
+    await app.close()
+  })
+
+  it('系统管理员看项目不再显示“无权访问”，但也不被当成拥有者/被授权人（Q-ADMIN-READ 待确认）', async () => {
+    const { app, call } = await client()
+    const asSys = await call('GET', '/api/v1/projects/prj_trial_ai_cs', undefined, {}, 'usr_trial_zheng')
+    expect(asSys.status).toBe(200)
+    expect(asSys.body.relation).toBe('none')
+    expect(asSys.body.relation_label).not.toContain('无权访问')
+    expect(asSys.body.relation_label).toContain('待')
+    // 关系没变：系统管理员仍不代发（api-spec §7.2）
+    const deploy = await call('POST', '/api/v1/environments/env_trial_cs_prev1:deploy', {}, { 'idempotency-key': 'sys-deploy-1' }, 'usr_trial_zheng')
+    expect(deploy.status).toBe(403)
+    await app.close()
+  })
+
+  it('人员权限页随列表拿到可分配项，不用去调只有系统管理员能读的 /sys/roles（P-14）', async () => {
+    const { app, call } = await client()
+    const list = await call('GET', '/api/v1/admin/users', undefined, {}, 'usr_trial_zhou')
+    expect(list.status).toBe(200)
+    const byRole = list.body.assignable_by_role as Record<string, { code: string; label: string; enabled: boolean }[]>
+    expect(Object.keys(byRole).sort()).toEqual(['admin', 'sysadmin', 'user'])
+    const people = byRole.admin!.find((o) => o.code === 'admin:people')!
+    expect(people.label.length).toBeGreaterThan(0)
+    expect(people.enabled).toBe(true)
+    expect(byRole.user!.every((o) => typeof o.enabled === 'boolean')).toBe(true)
+    // P-14 列表要显示飞书账号（不是凭据）
+    const first = (list.body.items as { display_name: string; feishu_account?: string }[])[0]!
+    expect(first.feishu_account).toBeTruthy()
+    expect(first.feishu_account).not.toContain('secret')
+    // 管理员调用 /sys/roles 仍 403（P-18 矩阵只给系统管理员），页面不得依赖它
+    expect((await call('GET', '/api/v1/sys/roles', undefined, {}, 'usr_trial_zhou')).status).toBe(403)
+    await app.close()
+  })
+
+  it('人员操作位只能从角色模型内挑（P-14：系统管理员不分配人员权限）', async () => {
+    const { app, call } = await client()
+    // P-14：系统管理员不直接分配人员权限
+    const bySysadmin = await call('PATCH', '/api/v1/admin/users/usr_trial_lin', { operations: ['project:read'] }, {}, 'usr_trial_zheng')
+    expect(bySysadmin.status).toBe(403)
+
+    // 模型外/非本角色的码 → 400，不静默丢弃
+    const invent = await call('PATCH', '/api/v1/admin/users/usr_trial_lin', { operations: ['grant:manage'] }, {}, 'usr_trial_zhou')
+    expect(invent.status).toBe(400)
+    expect(invent.body.errorCode).toBe('request.param_invalid')
+    expect(invent.body.details.unknown).toContain('grant:manage')
+
+    // 模型内但被关闭的码 → 403（不能靠人员权限绕过模型）
+    const model = (await call('GET', '/api/v1/sys/roles', undefined, {}, 'usr_trial_zheng')).body.roles as {
+      role: string
+      modules: { module: string; ops: { code: string; label: string; enabled: boolean }[] }[]
+    }[]
+    const adminRole = model.find((r) => r.role === 'admin')!
+    adminRole.modules.flatMap((x) => x.ops).find((o) => o.code === 'admin:audit')!.enabled = false
+    expect((await call('PUT', '/api/v1/sys/roles', { roles: model }, {}, 'usr_trial_zheng')).status).toBe(200)
+    const disabled = await call('PATCH', '/api/v1/admin/users/usr_trial_zhou', { operations: ['admin:audit'] }, {}, 'usr_trial_zhou')
+    expect(disabled.status).toBe(403)
+    expect(disabled.body.details.disabled).toContain('admin:audit')
+
+    adminRole.modules.flatMap((x) => x.ops).find((o) => o.code === 'admin:audit')!.enabled = true
+    expect((await call('PUT', '/api/v1/sys/roles', { roles: model }, {}, 'usr_trial_zheng')).status).toBe(200)
+    await app.close()
+  })
+})
+
+describe('开发自检修复：审计导出路径与候选列（DEF-12 / api-spec §10.4）', () => {
+  it('GET /audit/export 是规范路径，直接返回 text/csv（12 列候选，未确认用响应头标注）', async () => {
+    const { app } = await client()
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/audit/export?format=csv',
+      headers: { cookie: 'trial_user=usr_trial_zheng; trial_csrf=csrf_test', 'x-csrf-token': 'csrf_test' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(String(res.headers['content-type'])).toContain('text/csv')
+    expect(String(res.headers['content-disposition'])).toContain('attachment; filename="audit-')
+    expect(res.headers['x-audit-columns']).toBe('12')
+    expect(res.headers['x-audit-columns-provisional']).toBe('true')
+    const lines = res.body.trim().split('\r\n')
+    expect(lines[0]!.split(',')).toHaveLength(12)
+    expect(lines.length).toBeGreaterThan(1)
+    // 导出内容不得夹带凭据/令牌
+    expect(res.body.toLowerCase()).not.toMatch(/password|bearer |mcp_[a-z0-9]{8}/)
+    await app.close()
+  })
+
+  it('非法 format 明确 400，不静默当成 csv', async () => {
+    const { app, call } = await client()
+    const r = await call('GET', '/api/v1/audit/export?format=zip', undefined, {}, 'usr_trial_zheng')
+    expect(r.status).toBe(400)
+    expect(r.body.errorCode).toBe('request.param_invalid')
+    await app.close()
+  })
+})

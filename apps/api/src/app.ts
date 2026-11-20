@@ -9,8 +9,8 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import cookie from '@fastify/cookie'
 import { createHash, randomUUID } from 'node:crypto'
 import { errorBody, statusOf, type ErrorCode } from './domain/errors.js'
-import { adjustParamVerdict, hasOp, requiresOp, PERMISSION_CACHE_TTL_MS, type Role } from './domain/permissions.js'
-import { abnormalPreviews, audits, groups, idempotency, me, platform, projects, projectById, settings, shareLinks, tasks, templates, userById, users } from './repo/store.js'
+import { adjustParamVerdict, requiresOp, PERMISSION_CACHE_TTL_MS, type Role } from './domain/permissions.js'
+import { abnormalPreviews, assignableOpsByRole, audits, definedOpsOf, effectiveOps, enabledOpsOf, groups, idempotency, me, platform, projects, projectById, roleModel, saveRoleModel, setUserOps, settings, shareLinks, tasks, templates, userById, userHasOp, users } from './repo/store.js'
 import type { AuditRow, Environment, Project, ShareLink, Task } from './types.js'
 
 const T0 = '2026-11-20T09:20:00.000Z'
@@ -182,7 +182,7 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     if (isRead) {
       // 读也要按权限位判定；只是不需要 CSRF
       const readOp = requiresOp(req.method, opPath(req))
-      if (readOp && !hasOp(req.actor!.role, readOp)) {
+      if (readOp && !userHasOp(req.actor!.id, readOp)) {
         fail(reply, 'authz.forbidden', req.traceId, { required: readOp })
         return false
       }
@@ -201,8 +201,9 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
       return false
     }
     const need = requiresOp(req.method, opPath(req))
-    if (need && !hasOp(req.actor!.role, need)) {
-      fail(reply, 'authz.forbidden', req.traceId, { required: need })
+    if (need && !userHasOp(req.actor!.id, need)) {
+      // 操作位被角色模型关闭或被管理员回收时，直接拒绝（不静默降级）
+      fail(reply, 'authz.forbidden', req.traceId, { required: need, reason: '本人当前操作权限不含该项（可能被角色模型关闭或被管理员回收）。' })
       return false
     }
     return true
@@ -358,14 +359,18 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     if (!ROLES.has(role)) return fail(reply, 'request.param_invalid', req.traceId, { field: 'role', allowed: ['user', 'admin', 'sysadmin'] })
     const u = userById(ROLE_ACTOR[role]!)
     if (!u) return fail(reply, 'request.param_invalid', req.traceId, { field: 'role' })
+    // 切角色等于开一个新试跑会话：必须同时下发 CSRF，否则写操作会被 csrf_invalid 全拒（读可用、写不可用）
+    const csrf = `csrf_${randomUUID()}`
     reply.setCookie('trial_user', u.user_id, { httpOnly: true, sameSite: 'lax', path: '/' })
     reply.setCookie('trial_role', role, { httpOnly: true, sameSite: 'lax', path: '/' })
+    reply.setCookie('trial_csrf', csrf, { httpOnly: false, sameSite: 'lax', path: '/' })
     return {
+      csrf_token: csrf,
       user_id: u.user_id,
       display_name: u.display_name,
       role: u.role,
       groups: u.groups,
-      operations: u.operations,
+      operations: effectiveOps(u),
       session_expires_at: '2026-11-20T17:20:00.000Z',
       trial_only: true,
       note: '仅试跑会话：应用角色仍由服务端权限位校验，前端不成为安全边界。',
@@ -389,12 +394,12 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
 
   app.get('/api/v1/me', async (req) => {
     const u = userById(req.actor!.id)!
-    return { user_id: u.user_id, display_name: u.display_name, role: u.role, groups: u.groups, operations: u.operations, session_expires_at: '2026-11-20T17:20:00.000Z', mock: true }
+    return { user_id: u.user_id, display_name: u.display_name, role: u.role, groups: u.groups, operations: effectiveOps(u), session_expires_at: '2026-11-20T17:20:00.000Z', mock: true }
   })
 
   // ---------------- 项目 ----------------
   const cardOf = (p: Project, req: FastifyRequest) => {
-    const rel = relationOfProject(p, req.actor!.id, userById(req.actor!.id)?.groups ?? [])
+    const rel = relationView(req, p)
     const previews = p.environments.filter((e) => e.kind === 'preview')
     const recent = previews[0] ?? null
     const prod = p.environments.find((e) => e.kind === 'production') ?? null
@@ -473,6 +478,11 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     if (!name) return fail(reply, 'request.invalid', req.traceId, { field: 'name' })
     if (projects.some((p) => p.name === name)) return fail(reply, 'project.name_conflict', req.traceId)
     if (!body.template_id) return fail(reply, 'request.invalid', req.traceId, { field: 'template_id' })
+    // P-03：模板不可用（已下线/不存在）就拒绝创建，页面可改用空白模板重试；不静默替换用户已选模板
+    const tplId = String(body.template_id)
+    const tpl = templates.find((t) => t.id === tplId)
+    if (!tpl) return fail(reply, 'project.template_unavailable', req.traceId, { template_id: tplId, note: '模板不存在或已下线；可改用空白模板重试。' })
+    if (tpl.status !== 'active') return fail(reply, 'project.template_unavailable', req.traceId, { template_id: tplId, template_status: tpl.status, note: '模板已下线，不能用于新建项目；可改用空白模板重试。' })
     const taskId = `task_${randomUUID().slice(0, 8)}`
     const task: Task = {
       id: taskId,
@@ -760,20 +770,34 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   }
 
   // ---------------- 用量 / 文件 / 日志 ----------------
+  /** api-spec §8.3：用量分项 + 阈值；与 Dashboard 卡片 quota 同一口径（used/limit/ratio） */
   app.get('/api/v1/projects/:id/usage', async (req, reply) => {
     const { id } = req.params as { id: string }
     const p = visibleProject(req, id)
     if (!p) return fail(reply, 'project.not_found', req.traceId)
     const total = p.quota_used_bytes
-    const parts = [
-      { key: 'app', label: '应用镜像与运行层', bytes: Math.round(total * 0.28) },
-      { key: 'db', label: '数据库卷', bytes: Math.round(total * 0.4) },
-      { key: 'volume', label: '持久卷', bytes: Math.round(total * 0.18) },
-      { key: 'files', label: '文件', bytes: Math.round(total * 0.1) },
-      { key: 'logs', label: '日志', bytes: total - Math.round(total * 0.28) - Math.round(total * 0.4) - Math.round(total * 0.18) - Math.round(total * 0.1) },
-    ]
+    const limit = p.spec.disk_bytes
+    const ratio = Number((total / limit).toFixed(4))
+    const part = (kind: 'db' | 'volumes' | 'files' | 'logs', label: string, bytes: number) => ({ kind, label, bytes })
+    const db = Math.round(total * 0.4)
+    const volumes = Math.round(total * 0.28)
+    const files = Math.round(total * 0.18)
+    const logs = total - db - volumes - files
     const stale = req.scenario === 'collect_fail'
-    return { total_bytes: total, limit_bytes: p.spec.disk_bytes, ratio: Number((total / p.spec.disk_bytes).toFixed(4)), parts, collected_at: stale ? '2026-11-20T08:45:00.000Z' : T0, stale, stale_note: stale ? '用量采集失败，数字可能滞后；按每 15 分钟采集一次，最新一次未成功。' : null }
+    return {
+      project_id: p.id,
+      // 兼容字段：旧调用方读 total_bytes，规范字段读 used_bytes（两者同值）
+      total_bytes: total,
+      used_bytes: total,
+      limit_bytes: limit,
+      ratio,
+      period_minutes: 15,
+      parts: [part('db', '数据库卷', db), part('volumes', '持久卷与运行层', volumes), part('files', '文件存储', files), part('logs', '日志（30 天，计入配额）', logs)],
+      threshold: { warning: 0.8, action: 'hard_reject', exceeded: ratio >= 0.8 },
+      collected_at: stale ? '2026-11-20T08:45:00.000Z' : T0,
+      stale,
+      stale_note: stale ? '用量采集失败，数字可能滞后；按每 15 分钟采集一次，最新一次未成功。' : null,
+    }
   })
 
   app.get('/api/v1/projects/:id/files', async (req, reply) => {
@@ -796,15 +820,19 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   app.get('/api/v1/projects/:id/logs', async (req, reply) => {
     const { id } = req.params as { id: string }
     if (!visibleProject(req, id)) return fail(reply, 'project.not_found', req.traceId)
-    const source = String((req.query as Record<string, string | undefined>).source ?? 'app')
+    const asked = String((req.query as Record<string, string | undefined>).source ?? 'runtime')
+    // 契约 source ∈ {build, runtime, history}；`archive` 是页面旧叫法，统一到 history
+    const source = asked === 'archive' ? 'history' : asked
     if (req.scenario === 'archive_fail') {
       return fail(reply, 'platform.unavailable', req.traceId, { subsystem: 'log-archive', note: '日志转存失败：仅影响归档，不影响运行；已提示下次重试。' })
     }
     return {
-      items: LOG_LINES,
+      // api-spec §8.2 行形状：at / level / text（脱敏在写入转存前完成）
+      items: LOG_LINES.map((l, i) => ({ seq: i + 1, at: l.at, level: l.level, text: l.message, redacted: false })),
       source,
       retention_days: DEPLOY.logRetentionDays,
       redacted: true,
+      ai_hint: { available: false, reason: 'ai_disabled_by_default' },
       note: '项目级聚合视图（契约未定义，见 self-check F-01 分类）；正式契约按环境取日志：GET /environments/{id}/logs。',
     }
   })
@@ -1102,18 +1130,32 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   })
 
   // ---------------- 管理员 ----------------
-  app.get('/api/v1/admin/users', async () => ({ items: users.map((u) => ({ user_id: u.user_id, display_name: u.display_name, role: u.role, status: u.status, groups: u.groups, operations: u.operations })), total: users.length, page: 1, page_size: 20, has_next: false }))
+  // P-14 人员权限页要展示「模型内可勾选项」，但 /sys/roles 只对系统管理员开放（P-18）。
+  // 因此把可分配项随人员列表一起给管理员，避免页面为拿标签去调一个必然 403 的接口。
+  app.get('/api/v1/admin/users', async () => ({
+    items: users.map((u) => ({ user_id: u.user_id, display_name: u.display_name, feishu_account: u.feishu_account, role: u.role, status: u.status, groups: u.groups, operations: u.operations })),
+    assignable_by_role: assignableOpsByRole(roleModel),
+    total: users.length,
+    page: 1,
+    page_size: 20,
+    has_next: false,
+  }))
 
   app.patch('/api/v1/admin/users/:userId', async (req, reply) => {
     const { userId } = req.params as { userId: string }
     const u = userById(userId)
     if (!u) return fail(reply, 'request.invalid', req.traceId, { field: 'user_id' })
     const ops = ((req.body ?? {}) as { operations?: string[] }).operations ?? []
-    const disallowed = ops.filter((o) => o.startsWith('sys:'))
-    if (disallowed.length > 0) return fail(reply, 'authz.forbidden', req.traceId, { system_ops: disallowed })
+    if (!Array.isArray(ops)) return fail(reply, 'request.param_invalid', req.traceId, { field: 'operations' })
+    // P-14：只能勾选角色模型里已定义的项；模型外的项不出现也不可授予
+    const defined = new Set(definedOpsOf(u.role))
+    const unknown = ops.filter((o) => !defined.has(o))
+    if (unknown.length > 0) return fail(reply, 'request.param_invalid', req.traceId, { field: 'operations', unknown, note: '只能勾选角色权限模型里已有的操作位。' })
+    const disabled = ops.filter((o) => !enabledOpsOf(u.role).includes(o))
+    if (disabled.length > 0) return fail(reply, 'authz.forbidden', req.traceId, { disabled, reason: '该操作位在当前角色模型里被关闭，不能授予。' })
     return write(req, reply, { action: 'admin.user.update', target: { kind: 'user', id: userId }, detail: `${ops.length} 项操作位` }, () => {
-      u.operations = ops
-      return { body: { updated: true, effective_within_seconds: PERMISSION_CACHE_TTL_MS / 1000 } }
+      setUserOps(userId, ops)
+      return { body: { updated: true, operations: effectiveOps(u), effective_within_seconds: PERMISSION_CACHE_TTL_MS / 1000 } }
     })
   })
 
@@ -1213,14 +1255,59 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   app.get('/api/v1/admin/audit', async (req) => {
     const q = req.query as Record<string, string | undefined>
     const items = audits.filter((a) => (q.action ? a.action.includes(q.action) : true)).slice(0, Number(q.page_size ?? 20))
-    return { items, total: audits.length, csv_columns: 12, csv_columns_confirmed: false, note: 'CSV 12 列名未确认（T-01）；导出前不得当作最终格式。' }
+    return { items, total: audits.length, csv_columns: 12, csv_columns_confirmed: false, provisional: true, note: 'CSV 12 列名未确认（T-01）；导出前不得当作最终格式。' }
   })
 
-  app.post('/api/v1/admin/audit/export', async (req, reply) => {
-    const format = String(((req.body ?? {}) as { format?: string }).format ?? 'csv')
-    if (format === 'csv') return write(req, reply, { action: 'audit.export', target: { kind: 'audit', id: 'all' } }, () => ({ body: { format, rows: audits.length, columns: 12, columns_confirmed: false, note: 'T-01 待确认：列名未定稿，导出内容仅供内部核对。' } }))
-    return write(req, reply, { action: 'audit.export', target: { kind: 'audit', id: 'all' } }, () => ({ body: { format: 'json', rows: audits.length } }))
-  })
+  // 管理路径别名：/admin/audit/export（兼容旧页面；规范路径见下方 §10.4 GET /audit/export）
+  // api-spec §1.1：导出必须是 text/csv（不是把列名当 JSON 返回）；12 列名仍未确认，用响应头标注
+  const AUDIT_CSV_COLUMNS = ['时间', '操作人', '角色', '动作', '对象类型', '对象ID', '项目', '结果', '原因/错误码', '来源IP', 'traceId', '变更摘要']
+  const csvCell = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`
+  const auditCsvText = () => {
+    const lines = [AUDIT_CSV_COLUMNS.join(',')]
+    for (const a of audits.slice(0, 1000)) {
+      const role = users.find((u) => u.user_id === a.actor_id)?.role ?? ''
+      const projectId = a.target_kind === 'project' ? a.target_id : ''
+      lines.push(
+        [
+          a.at,
+          a.actor_name,
+          role,
+          a.action,
+          a.target_kind,
+          a.target_id,
+          projectId,
+          a.result === 'success' ? '成功' : '失败',
+          a.error_code ?? '',
+          a.ip,
+          a.trace_id,
+          a.detail,
+        ]
+          .map(csvCell)
+          .join(','),
+      )
+    }
+    return lines.join('\r\n')
+  }
+  const auditExport = async (req: FastifyRequest, reply: FastifyReply) => {
+    if (!userHasOp(req.actor!.id, 'admin:audit')) return fail(reply, 'authz.forbidden', req.traceId, { required: 'audit:read' })
+    const q = (req.query ?? {}) as Record<string, string | undefined>
+    const bodyFormat = ((req.body ?? {}) as { format?: string }).format
+    const format = String(q.format ?? bodyFormat ?? 'csv')
+    if (!['csv', 'json'].includes(format)) return fail(reply, 'request.param_invalid', req.traceId, { field: 'format', allowed: ['csv', 'json'] })
+    if (format === 'json') {
+      return write(req, reply, { action: 'audit.export', target: { kind: 'audit', id: 'all' } }, () => ({
+        body: { format: 'json', rows: audits.length, items: audits, columns_confirmed: false, provisional: true },
+      }))
+    }
+    reply.header('content-type', 'text/csv; charset=utf-8')
+    reply.header('content-disposition', `attachment; filename="audit-${new Date().toISOString().slice(0, 10)}.csv"`)
+    reply.header('x-audit-columns', '12')
+    reply.header('x-audit-columns-provisional', 'true')
+    reply.header('x-audit-columns-note', encodeURIComponent('T-01 待确认：12 列为候选列名，未获业务批准'))
+    return write(req, reply, { action: 'audit.export', target: { kind: 'audit', id: 'all' } }, () => ({ body: auditCsvText() }))
+  }
+  app.get('/api/v1/admin/audit/export', auditExport)
+  app.post('/api/v1/admin/audit/export', auditExport)
 
   app.get('/api/v1/admin/alerts', async () => ({
     items: [
@@ -1230,26 +1317,38 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   }))
 
   // ---------------- 系统管理员 ----------------
+  /** P-18：角色权限模型（模块 × 操作矩阵）。保存后立即生效，GET 回读即最新模型。 */
   app.get('/api/v1/sys/roles', async () => ({
-    version: 'v1',
-    roles: [
-      { key: 'user', name: '普通用户', operations: ['project:read', 'deploy:create', 'preview:create', 'preview:delete'] },
-      { key: 'admin', name: '管理员', operations: ['admin:people', 'admin:group', 'admin:param:concurrency', 'admin:param:queue'] },
-      { key: 'sysadmin', name: '系统管理员', operations: ['sys:setting', 'sys:cleanup', 'sys:restore', 'sys:role', 'sys:template'] },
-    ],
+    version: roleModel.version,
+    updated_at: roleModel.updated_at,
+    roles: roleModel.roles,
     relations: ['拥有者（项目属性）', '被授权人（数据关系）', '项目组（数据关系）'],
-    note: '只存在三种应用角色；拥有者/授权/项目组是数据关系，不能当角色分配。',
+    note: '只存在三种应用角色；拥有者/授权/项目组是数据关系，不能当角色分配。保存后 ≤30 秒生效。',
   }))
 
-  app.put('/api/v1/sys/roles', async (req, reply) => write(req, reply, { action: 'sys.roles.update', target: { kind: 'role_model', id: 'v' } }, () => ({ body: { version: `v${Date.now()}`, affected: { user: 4, admin: 1, sysadmin: 1 } } })))
+  app.put('/api/v1/sys/roles', async (req, reply) => {
+    const saved = saveRoleModel(req.body)
+    if (!saved.ok) return fail(reply, 'request.param_invalid', req.traceId, { reason: saved.reason, ...(saved.details ?? {}) })
+    return write(req, reply, { action: 'sys.roles.update', target: { kind: 'role_model', id: saved.version }, detail: `影响：普通用户 ${saved.affected.user} 人 / 管理员 ${saved.affected.admin} 人 / 系统管理员 ${saved.affected.sysadmin} 人` }, () => ({
+      body: { version: saved.version, updated_at: roleModel.updated_at, affected: saved.affected, effective_within_seconds: PERMISSION_CACHE_TTL_MS / 1000 },
+    }))
+  })
 
-  app.get('/api/v1/sys/templates', async () => ({ items: templates }))
+  /** 系统管理员模板管理：含已下线历史版本（P-19），与 /templates（只返回 active）分权 */
+  app.get('/api/v1/sys/templates', async () => ({
+    items: templates.map((t) => ({ ...t, available: t.status === 'active' })),
+    note: '下线只标 deprecated，不删历史、不影响已建项目。',
+  }))
 
   /** api-spec §5.6：门户模板库（创建向导用，普通用户可用，故与 /sys/templates 分权） */
-  app.get('/api/v1/templates', async () => ({
-    items: templates.filter((t) => t.available).map((t) => ({ ...t, status: 'active', has_demo: true, has_spec: true, has_skills: true, build_preset: 'node-vue-bff' })),
-    note: '只返回已发布可用版本；更新规范不覆盖用户已修改文件。',
-  }))
+  app.get('/api/v1/templates', async (req, reply) => {
+    // 试跑故障注入：模板库不可用（页面据此给出「使用空白模板」真实回退，而不是空列表死路）
+    if (req.scenario === 'template_down') return fail(reply, 'project.template_unavailable', req.traceId, { source: 'template_library' })
+    return {
+      items: templates.filter((t) => t.status === 'active').map((t) => ({ ...t, available: true })),
+      note: '只返回已发布可用版本；更新规范不覆盖用户已修改文件。',
+    }
+  })
 
   app.get('/api/v1/templates/:id/versions', async (req, reply) => {
     const { id } = req.params as { id: string }
@@ -1260,10 +1359,13 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   app.post('/api/v1/sys/templates/:id/:action', async (req, reply) => {
     const { id, action } = req.params as { id: string; action: string }
     const t = templates.find((x) => x.id === id)
-    if (!t || !['publish', 'offline'].includes(action)) return fail(reply, 'request.invalid', req.traceId)
-    return write(req, reply, { action: `sys.template.${action}`, target: { kind: 'template', id } }, () => {
-      t.available = action === 'publish'
-      return { body: { template: t, note: action === 'offline' ? '下线只影响新建项目，已有项目保持原状。' : '已重新上线。' } }
+    // 契约动作名是 deprecate（api-spec §5.6）；试跑实现内叫 offline，两者等价
+    const act = action === 'deprecate' ? 'offline' : action
+    if (!t || !['publish', 'offline'].includes(act)) return fail(reply, 'request.invalid', req.traceId)
+    return write(req, reply, { action: `sys.template.${act}`, target: { kind: 'template', id } }, () => {
+      // 发布/下线只改状态；历史版本与已建项目不受影响
+      t.status = act === 'publish' ? 'active' : 'deprecated'
+      return { body: { template: { ...t, available: t.status === 'active' }, note: act === 'offline' ? '下线只影响新建项目，已有项目保持原状。' : '已重新上线，可用于新建项目。' } }
     })
   })
 
@@ -1438,7 +1540,8 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     if (!p) return fail(reply, 'project.not_found', req.traceId)
     const envId = q.env_id ?? p.environments.find((e) => e.kind === 'production')?.id ?? ''
     if (!p.environments.some((e) => e.id === envId)) return fail(reply, 'env.not_found', req.traceId, { env_id: envId })
-    if (req.scenario === 'storage_down') return fail(reply, 'internal.unexpected', req.traceId, { subsystem: 'storage', note: '文件存储不可用；只能浏览与下载，本页不提供上传/删除。' })
+    // 与 /projects/{id}/files 同一口径：存储不可用是平台侧不可用（不是未预期错误）
+    if (req.scenario === 'storage_down') return fail(reply, 'platform.unavailable', req.traceId, { subsystem: 'storage', note: '文件存储不可用；只能浏览与下载，本页不提供上传/删除。' })
     const checked = safePath(q.path ?? '/')
     if (!checked.ok) return fail(reply, 'file.path_invalid', req.traceId, { path: q.path })
     const path = checked.path
@@ -1522,7 +1625,7 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   app.get('/api/v1/admin/previews/cleanup-candidates', async (req, reply) => {
     if (req.actor!.role !== 'sysadmin') return fail(reply, 'authz.forbidden', req.traceId, { required: 'system:resource' })
     return {
-      items: abnormalPreviews.map((a) => ({ env_id: a.id, project_id: a.project_id, project_name: a.project_name, branch: a.branch, reason: CLEANUP_REASONS[a.case], state: a.state, size_bytes: a.size_bytes })),
+      items: abnormalPreviews.map((a) => ({ env_id: a.id, project_id: a.project_id, project_name: a.project_name, branch: a.branch, reason: CLEANUP_REASONS[a.case], state: a.state, last_active_at: a.last_active_at, size_bytes: a.size_bytes })),
       scope_note: '只列三种情形：停用账号遗留 / 删除项目残留 / 用户无法自行删除。正常预览不在范围。',
     }
   })
@@ -1566,25 +1669,14 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   app.post('/api/v1/admin/previews/cleanup', previewsCleanup)
 
   app.get('/api/v1/audit', async (req, reply) => {
-    if (!hasOp(req.actor!.role, 'admin:audit')) return fail(reply, 'authz.forbidden', req.traceId, { required: 'audit:read' })
+    if (!userHasOp(req.actor!.id, 'admin:audit')) return fail(reply, 'authz.forbidden', req.traceId, { required: 'audit:read' })
     const q = req.query as Record<string, string | undefined>
     const items = audits.filter((a) => (q.action ? a.action.includes(q.action) : true)).slice(0, Number(q.page_size ?? 20))
-    return { items, total: audits.length, append_only: true, retention_days: DEPLOY.auditRetentionDays }
+    return { items, total: audits.length, append_only: true, retention_days: DEPLOY.auditRetentionDays, csv_columns: 12, csv_columns_confirmed: false, note: 'CSV 固定 12 列；列名待 T-01 业务确认，导出前不编造列名。' }
   })
 
-  const AUDIT_CSV_COLUMNS = ['时间', '操作人', '角色', '动作', '对象类型', '对象ID', '项目', '结果', '原因/错误码', '来源IP', 'traceId', '变更摘要']
-  app.get('/api/v1/audit/export', async (req, reply) => {
-    if (!hasOp(req.actor!.role, 'admin:audit')) return fail(reply, 'authz.forbidden', req.traceId, { required: 'audit:read' })
-    const format = String((req.query as Record<string, string | undefined>).format ?? 'csv')
-    if (format === 'json') return { format: 'json', rows: audits.length, items: audits.slice(0, 100) }
-    return {
-      format: 'csv',
-      provisional: true,
-      columns: AUDIT_CSV_COLUMNS,
-      columns_note: 'T-01：12 列字段名未获批准，导出前必须再次确认；不含令牌/连接串/密码/完整 open_id/文件内容。',
-      rows: audits.length,
-    }
-  })
+  app.get('/api/v1/audit/export', auditExport)
+  app.post('/api/v1/audit/export', auditExport)
 
   // ---- MCP（Agent 接入）：只暴露白名单，写操作转确认请求 ----
   const mcpKeyOf = (req: FastifyRequest) => {
@@ -1667,6 +1759,18 @@ function ownerProject(req: FastifyRequest, id: string): Project | 'FORBIDDEN' | 
  * 数据关系按「当前请求者」算，不能用种子里的固定 relation：
  * 拥有者 / 被授权人 / 项目组 / 无权限 决定看得到什么，也决定能否做授权、分享等写操作。
  */
+/**
+ * 系统管理员能看所有项目（平台视图），但「无权访问」的标签会与页面实际内容自相矛盾。
+ * 只改展示标签：不给自己加拥有者/被授权关系，也不因此获得发布/授权等写能力。
+ */
+function relationView(req: FastifyRequest, p: Project): { relation: Project['relation']; relation_label: string } {
+  const rel = relationOfProject(p, req.actor!.id, userById(req.actor!.id)?.groups ?? [])
+  if (rel.relation === 'none' && req.actor!.role === 'sysadmin') {
+    return { relation: 'none', relation_label: '系统管理员视角（只读，可见范围待确认）' }
+  }
+  return rel
+}
+
 export function relationOfProject(p: Project, actorId: string, actorGroups: string[]): { relation: Project['relation']; relation_label: string } {
   if (p.owner_id === actorId) return { relation: 'owner', relation_label: '你是拥有者' }
   if (p.grant_people.includes(actorId)) return { relation: 'granted', relation_label: `来自：${p.owner_name} 授权` }

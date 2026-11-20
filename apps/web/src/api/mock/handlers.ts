@@ -58,11 +58,11 @@ export function dispatch(req: MockRequest): MockResult {
     seg.push('delete')
   }
   if (seg[0] === 'groups') seg[0] = 'admin' // /groups → /admin/groups
-  if (seg[0] === 'audit') seg[0] = 'admin' // /audit → /admin/audit
+  if (seg[0] === 'audit') seg = ['admin', 'audit', ...seg.slice(1)] // /audit、/audit/export → /admin/audit…
   else if (seg[0] === 'mcp-keys') seg = ['mcp', 'key']
   else if (seg[0] === 'files') seg = ['projects', String(req.query?.project_id ?? ''), 'files']
   else if (seg[0] === 'admin' && seg[1] === 'previews' && seg[2] === 'cleanup-candidates') seg = ['sys', 'previews', 'abnormal']
-  else if (seg[0] === 'admin' && seg[1] === 'previews' && seg[2] === 'cleanup') seg = ['sys', 'previews', 'cleanup']
+  else if (seg[0] === 'admin' && seg[1] === 'previews' && (seg[2] === 'cleanup' || action === 'cleanup')) seg = ['sys', 'previews', 'cleanup']
   else if (seg[0] === 'admin' && seg[1] === 'restores') {
     seg = ['sys', 'restore']
     if (body.confirm !== undefined) body.confirm_word = body.confirm
@@ -142,27 +142,54 @@ export function dispatch(req: MockRequest): MockResult {
   }
   if (seg[0] === 'projects' && seg[1] && seg[2] === 'usage') {
     const p = project(seg[1])!
-    const parts = [
-      { key: 'db_volume' as const, label: '数据库卷', used_bytes: Math.round(p.quota.used_bytes * 0.5) },
-      { key: 'persistent_volume' as const, label: '持久卷', used_bytes: Math.round(p.quota.used_bytes * 0.2) },
-      { key: 'files' as const, label: '文件存储', used_bytes: Math.round(p.quota.used_bytes * 0.2) },
-      { key: 'logs' as const, label: '日志（30 天，计入配额）', used_bytes: Math.round(p.quota.used_bytes * 0.1) },
-    ]
+    const total = p.quota.used_bytes
+    const db = Math.round(total * 0.4)
+    const volumes = Math.round(total * 0.28)
+    const files = Math.round(total * 0.18)
+    const logs = total - db - volumes - files
+    const ratio = Number((total / p.quota.limit_bytes).toFixed(4))
     return ok({
-      cpu: { used: p.spec.cpu * 0.6, limit: p.spec.cpu },
-      memory_mb: { used: Math.round(p.spec.memory_mb * 0.55), limit: p.spec.memory_mb },
-      disk: { used_bytes: p.quota.used_bytes, limit_bytes: p.quota.limit_bytes, parts },
+      project_id: p.id,
+      used_bytes: total,
+      limit_bytes: p.quota.limit_bytes,
+      ratio,
+      period_minutes: 15,
+      parts: [
+        { kind: 'db', label: '数据库卷', bytes: db },
+        { kind: 'volumes', label: '持久卷与运行层', bytes: volumes },
+        { kind: 'files', label: '文件存储', bytes: files },
+        { kind: 'logs', label: '日志（30 天，计入配额）', bytes: logs },
+      ],
+      threshold: { warning: 0.8, action: 'hard_reject', exceeded: ratio >= 0.8 },
       collected_at: '2026-11-20T09:15:00.000Z',
       stale: scenario === 'collect_fail',
+      stale_note: scenario === 'collect_fail' ? '用量采集失败，数字可能滞后；按每 15 分钟采集一次，最新一次未成功。' : null,
     })
   }
   if (seg[0] === 'projects' && seg[1] && seg[2] === 'files') {
-    if (scenario === 'storage_down') return fail(trace, 'file.storage_unavailable', '文件存储暂不可用。', '重试；持续失败请联系系统管理员。', 503)
+    if (scenario === 'storage_down') return fail(trace, 'platform.unavailable', '文件存储暂不可用。', '重试；持续失败请联系系统管理员。', 503)
     const p = project(seg[1])!
-    const envKind = String(q.kind ?? 'production')
-    const env = p.environments.find((e) => e.kind === envKind)
+    const path = String(q.path ?? '/')
+    if (/\.\.|^\/\/|^[a-zA-Z]:/.test(path)) return fail(trace, 'file.path_invalid', '路径不合法。', '只能浏览项目环境内的文件。', 400)
+    // api-spec §8.1：下载/属性走同一只读边界
+    if (action === 'download') {
+      const name = path.split('/').pop() || 'download.bin'
+      return ok({ filename: name, text: '试跑替身文件内容（非真实应用文件，未接对象存储 ENV 未完成）\n' })
+    }
+    if (action === 'stat') {
+      const name = path.split('/').pop() || ''
+      const hit = p.files.find((f) => f.name === name)
+      if (!hit) return fail(trace, 'file.not_found', '文件不存在。', '刷新目录后再试。', 404)
+      return ok({ name: hit.name, type: hit.type, size: hit.size_bytes, modified_at: hit.modified_at })
+    }
+    const env = q.env_id ? p.environments.find((e) => e.id === String(q.env_id)) : p.environments.find((e) => e.kind === String(q.kind ?? 'production'))
     if (!env) return fail(trace, 'file.env_not_found', '该环境还没有创建。', '先创建环境后再浏览文件。', 404)
-    return ok({ items: envKind === 'preview' ? p.files.slice(0, 2) : p.files, path: String(q.path ?? '/'), read_only: true, note: '平台不提供 S3 / 对象存储 API' } satisfies Record<string, unknown>)
+    return ok({
+      entries: (env.kind === 'preview' ? p.files.slice(0, 2) : p.files).map((f) => ({ name: f.name, type: f.type, size: f.size_bytes, modified_at: f.modified_at })),
+      path,
+      read_only: true,
+      note: '平台不提供 S3 / 对象存储 API',
+    } satisfies Record<string, unknown>)
   }
   if (seg[0] === 'projects' && seg[1] && seg[2] === 'logs' && seg.length === 3) {
     const p = project(seg[1])!
@@ -391,7 +418,11 @@ export function dispatch(req: MockRequest): MockResult {
 
   // ---------- 后台：管理员 ----------
   if (seg[0] === 'admin' && seg[1] === 'users') {
-    if (method === 'GET') return ok({ items: adminUsersSeed(), total: 5, page: 1, page_size: 20, has_next: false })
+    if (method === 'GET') {
+      // P-14：可分配项随人员列表下发（管理员无权读 /sys/roles）
+      const assignable = Object.fromEntries(roleModel.roles.map((r) => [r.role, r.modules.flatMap((m) => m.ops.map((o) => ({ code: o.code, label: o.label, enabled: o.enabled })))]))
+      return ok({ items: adminUsersSeed(), assignable_by_role: assignable, total: 5, page: 1, page_size: 20, has_next: false })
+    }
     if (method === 'PATCH' && seg[2]) {
       return ok({ updated: true, effective_within_seconds: 30, audit_recorded: true })
     }
@@ -419,12 +450,25 @@ export function dispatch(req: MockRequest): MockResult {
     settings[key] = value
     return ok({ key, value, effective_for: 'new_tasks_only', audit_recorded: true })
   }
-  if (seg[0] === 'admin' && seg[1] === 'audit' && method === 'GET') {
-    return ok({ items: audit, total: audit.length, page: 1, page_size: 50, has_next: false, csv_columns: 12, csv_columns_confirmed: false, note: 'CSV 固定 12 列；具体列名待业务确认（T-01）' })
-  }
   if (seg[0] === 'admin' && seg[1] === 'audit' && seg[2] === 'export') {
-    return ok({ format: String(body.format ?? 'csv'), rows: audit.length, columns: body.format === 'csv' ? 12 : undefined, note: body.format === 'csv' ? '列名待确认（T-01），导出前不编造列名' : 'JSON 同步导出' }, 202)
+    const format = String(q.format ?? body.format ?? 'csv')
+    if (format === 'csv') {
+      // Mock 与 BFF 同契约：返回真实 CSV 文本（12 列候选，T-01 未确认）
+      const columns = ['时间', '操作人', '角色', '动作', '对象类型', '对象ID', '项目', '结果', '原因/错误码', '来源IP', 'traceId', '变更摘要']
+      const cell = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`
+      const lines = [columns.join(',')]
+      for (const a of audit) {
+        const change = a.before && a.after ? `${a.before} → ${a.after}` : ''
+        lines.push([a.at, a.actor, '', a.action, '', a.object, '', a.result, '', a.source_ip, '', change].map(cell).join(','))
+      }
+      return ok(lines.join('\r\n'))
+    }
+    return ok({ format: 'json', rows: audit.length, items: audit, columns_confirmed: false, provisional: true })
   }
+  if (seg[0] === 'admin' && seg[1] === 'audit' && method === 'GET') {
+    return ok({ items: audit, total: audit.length, page: 1, page_size: 50, has_next: false, csv_columns: 12, csv_columns_confirmed: false, provisional: true, note: 'CSV 固定 12 列；具体列名待业务确认（T-01）' })
+  }
+
   if (seg[0] === 'admin' && seg[1] === 'alerts') {
     return ok({ items: alerts, levels: ['warning', 'critical'] })
   }
@@ -479,14 +523,30 @@ export function dispatch(req: MockRequest): MockResult {
     return ok({ items: abnormalPreviews, scope_note: '仅三种异常情形；正常预览不进入列表' })
   }
   if (seg[0] === 'sys' && seg[1] === 'previews' && seg[2] === 'cleanup' && method === 'POST') {
-    const ids = (body.ids ?? []) as string[]
-    if (!Array.isArray(ids) || ids.length === 0) return fail(trace, 'system.param_invalid', '未选择要清理的预览。', '至少勾选一项。', 422)
-    const rows = abnormalPreviews.filter((a) => ids.includes(a.id)).map((a) => {
-      const failed = a.case === 'undeletable' || scenario === 'cleanup_partial'
-      return { id: a.id, project: a.project_name, branch: a.branch, case: a.case, result: failed ? 'still_residual' : 'deleted', reason: failed ? '持久卷释放失败，资源仍残留' : '已删除应用、库、桶、持久卷' }
-    })
-    state.cleanupReports.unshift({ at: '2026-11-20T09:20:00.000Z', operator: me.display_name, rows })
-    return ok({ rows, done: rows.filter((r) => r.result === 'deleted').length, residual: rows.filter((r) => r.result !== 'deleted').length, report_exportable: true })
+    // api-spec §10.6：{ items:[{env_id,reason}], confirm, confirm_text } → 逐条 succeeded/failed
+    const items = (body.items ?? []) as { env_id: string; reason: string }[]
+    if (!Array.isArray(items) || items.length === 0) return fail(trace, 'cleanup.param_invalid', '未选择要清理的预览。', '至少勾选一项。', 400)
+    const expected = `清理 ${items.length} 个异常预览`
+    if (body.confirm !== true || body.confirm_text !== expected) {
+      return fail(trace, 'cleanup.confirm_required', '缺少第二次确认或确认文案与数量不一致。', `需要二次确认，确认文案为「${expected}」。`, 422, { expected_confirm_text: expected })
+    }
+    const outside = items.filter((i) => !abnormalPreviews.some((a) => a.id === i.env_id))
+    if (outside.length > 0) return fail(trace, 'cleanup.scope_invalid', '选择的预览不在异常范围内。', '只能清理三种异常情形。', 409, { items: outside.map((i) => i.env_id) })
+    const succeeded: { env_id: string; branch: string; reason: string; freed_bytes: number }[] = []
+    const failed: { env_id: string; errorCode: string; message: string; nextStep: string }[] = []
+    for (const i of items) {
+      const a = abnormalPreviews.find((x) => x.id === i.env_id)!
+      const stuck = a.case === 'undeletable' || scenario === 'cleanup_partial'
+      if (stuck) {
+        failed.push({ env_id: a.id, errorCode: 'cleanup.per_item_failed', message: '持久卷释放失败，资源仍残留。', nextStep: '重试；仍失败由系统管理员按运维流程处理持久卷。' })
+        continue
+      }
+      succeeded.push({ env_id: a.id, branch: a.branch, reason: i.reason, freed_bytes: a.size_bytes })
+      const idx = abnormalPreviews.findIndex((x) => x.id === a.id)
+      if (idx >= 0) abnormalPreviews.splice(idx, 1)
+    }
+    state.cleanupReports.unshift({ at: '2026-11-20T09:20:00.000Z', operator: me.display_name, rows: succeeded.map((r) => ({ id: r.env_id, result: 'deleted' })) })
+    return ok({ requested: items.length, succeeded, failed, audit_ids: items.map((_, n) => `aud_cleanup_${Date.now()}_${n}`) })
   }
   if (seg[0] === 'sys' && seg[1] === 'restore' && method === 'POST') {
     if (body.confirm_word !== 'RESTORE') return fail(trace, 'system.confirm_mismatch', '确认词不正确。', '输入 RESTORE 后重试。', 422)
