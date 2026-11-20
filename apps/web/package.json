@@ -1,0 +1,29 @@
+{
+  "name": "@my-project/web",
+  "private": true,
+  "version": "0.1.0-trial.1",
+  "type": "module",
+  "description": "AI 成果自助部署平台 · 门户前端（试跑 Mock 版）。技术栈按需求文档约定：Vue 3 + Vite + Node BFF 消费方，不含后端实现。",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 5173",
+    "build": "vue-tsc --noEmit -p tsconfig.json && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "vue": "3.5.13",
+    "vue-router": "4.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@vitejs/plugin-vue": "5.2.1",
+    "@vue/test-utils": "^2.6.0",
+    "happy-dom": "15.11.7",
+    "typescript": "5.7.2",
+    "vite": "6.0.5",
+    "vitest": "^3.2.7",
+    "vue-tsc": "2.2.0"
+  }
+}
