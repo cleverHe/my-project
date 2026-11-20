@@ -1,13 +1,14 @@
 /** 会话与角色（试跑用：可切换三种应用角色做界面核对；真实环境角色来自服务端） */
 import { computed, reactive, readonly } from 'vue'
 import type { Me, Role } from '@/api/types'
-import { authContext, readCsrfCookie } from '@/api/http'
+import { api } from '@/api/client'
+import { USE_MOCK, authContext, readCsrfCookie, isApiError } from '@/api/http'
 import { roleOperations } from '@/domain/permissions'
 
 interface SessionState {
   me: Me | null
   loading: boolean
-  /** 试跑角色切换：仅前端演示，服务端仍按真实身份校验 */
+  /** 试跑角色切换：BFF 模式下会写服务端会话；Mock 下仅前端演示 */
   trialRole: Role | null
 }
 
@@ -48,6 +49,8 @@ export function useSession() {
 
   function adopt(me: Me) {
     state.me = me
+    // 登录/切换账号后角色以服务端会话为准，不沿用上一次会话残留的试跑角色
+    state.trialRole = me.role
     authContext.userId = me.user_id
     authContext.csrfToken = readCsrfCookie() ?? 'trial-csrf-token'
     writeTrial(state)
@@ -56,6 +59,29 @@ export function useSession() {
   function switchTrialRole(next: Role) {
     state.trialRole = next
     writeTrial(state)
+  }
+
+  /**
+   * 试跑角色切换（接 BFF 时）：必须落服务端会话，否则页面显示管理员菜单但请求仍是普通用户身份（403）。
+   * 仅试跑端点；真实环境无此接口，失败不改本体权限，只保留前端展示并返回错误供页面提示。
+   */
+  async function switchTrialRoleServer(next: Role): Promise<void> {
+    state.trialRole = next
+    writeTrial(state)
+    if (USE_MOCK) return
+    try {
+      const res = await api.trialRole(next)
+      state.me = res.data
+      authContext.userId = res.data.user_id
+      authContext.csrfToken = readCsrfCookie() ?? authContext.csrfToken
+      writeTrial(state)
+    } catch (e) {
+      if (isApiError(e) && e.errorCode === 'request.path_unknown') {
+        // 正式环境没有试跑端点：保持只演示，不冒充已切换
+        return
+      }
+      throw e
+    }
   }
 
   function signOut() {
@@ -76,6 +102,7 @@ export function useSession() {
     ops,
     adopt,
     switchTrialRole,
+    switchTrialRoleServer,
     signOut,
     isSignedIn: computed(() => state.me !== null),
   }
@@ -89,6 +116,7 @@ export async function bootstrapSession(loader: () => Promise<{ data: Me }>): Pro
   try {
     const me = await loader()
     state.me = me.data
+    state.trialRole = me.data.role
     authContext.userId = me.data.user_id
     authContext.csrfToken = readCsrfCookie()
   } catch {

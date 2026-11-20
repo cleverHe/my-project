@@ -22,8 +22,14 @@ const nav = computed(() => visibleNav(session.role.value, session.ops.value))
 const roleLabel = computed(() => ({ user: '普通用户', admin: '管理员', sysadmin: '系统管理员' })[session.role.value])
 
 function onRole(e: Event) {
-  session.switchTrialRole((e.target as HTMLSelectElement).value as Role)
-  void router.push('/dashboard')
+  const role = (e.target as HTMLSelectElement).value as Role
+  // 接 BFF 时把角色落到服务端会话，否则管理员/系统管理员页会 403（QA-DEF-06）
+  void session
+    .switchTrialRoleServer(role)
+    .catch(() => ui.push('error', '试跑角色切换失败', ['仍按当前登录身份校验；刷新页面后重试。']))
+    .finally(() => {
+      void router.push('/dashboard')
+    })
 }
 function onScenario(e: Event) {
   ui.setScenario((e.target as HTMLSelectElement).value)

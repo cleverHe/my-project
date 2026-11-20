@@ -185,6 +185,18 @@ export const ERROR_TABLE = {
     impact: '看不到任何项目内容。',
     nextStep: '回到 Dashboard；30 天内可让管理员恢复已删除项目。',
   },
+  'grant.not_found': {
+    status: 404,
+    what: '该授权不存在或已被回收。',
+    impact: '本次没有改变任何授权。',
+    nextStep: '刷新授权列表确认当前状态；撤销分享链接是另一个操作。',
+  },
+  'share.not_found': {
+    status: 404,
+    what: '该分享链接不存在。',
+    impact: '本次没有改变任何分享或授权。',
+    nextStep: '刷新分享列表后重试；撤销分享不会回收项目授权。',
+  },
   'project.slug_immutable': {
     status: 422,
     what: '项目标识（slug）不可修改。',

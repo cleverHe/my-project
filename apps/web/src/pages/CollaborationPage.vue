@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** P-10 授权与分享：两件事分开；授权只有「可见」一档；分享不等于授权 */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '@/api/client'
 import type { GrantItem, ShareItem } from '@/api/types'
@@ -8,11 +8,13 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import ErrorNotice from '@/components/ErrorNotice.vue'
 import { formatDateTime } from '@/domain/format'
 import { COPY } from '@/domain/text'
+import { useProject } from '@/stores/project'
 import { useUi } from '@/stores/ui'
 
 const route = useRoute()
 const id = String(route.params.id)
 const ui = useUi()
+const { state: projectState, ensure } = useProject(id)
 const grants = ref<GrantItem[]>([])
 const shares = ref<ShareItem[]>([])
 const limits = ref({ people: 50, groups: 10, group_members: 200 })
@@ -21,10 +23,17 @@ const subjectName = ref('')
 const subjectType = ref<'user' | 'group'>('user')
 const revokeGrantTarget = ref<GrantItem | null>(null)
 const revokeShareTarget = ref<ShareItem | null>(null)
+/** 防重复提交：一次用户动作只发一次写请求（QA-DEF-03） */
+const busy = ref(false)
+/** 授权与分享的写操作只有拥有者能做（被授权人不能再授权；系统管理员不代发） */
+const isOwner = computed(() => projectState.project?.relation === 'owner')
+const canWrite = computed(() => isOwner.value && !busy.value)
 
 async function load() {
   error.value = null
   try {
+    await ensure()
+
     const [g, s] = await Promise.all([api.grants(id), api.shares(id)])
     grants.value = g.data.items
     limits.value = g.data.limits
@@ -35,22 +44,26 @@ async function load() {
 }
 
 async function addGrant() {
-  if (!subjectName.value.trim()) return
+  const name = subjectName.value.trim()
+  if (!name || !canWrite.value) return
+  busy.value = true
   error.value = null
   try {
-    const res = await api.addGrants(id, [{ type: subjectType.value, name: subjectName.value.trim() }])
+    const res = await api.addGrants(id, [{ type: subjectType.value, name }])
     const failed = res.data.results.filter((r) => !r.ok)
-    if (failed.length) ui.push('warn', '部分未添加', failed.map((f) => `${f.name}：${f.reason ?? ''}`))
+    if (failed.length) ui.push('warn', '未添加', failed.map((f) => `${f.name}：${f.reason ?? ''}`))
     else ui.push('success', '已授权（仅可见）', [COPY.singleGrantLevel])
     subjectName.value = ''
     await load()
   } catch (e) {
     error.value = e
+  } finally {
+    busy.value = false
   }
 }
 
 async function revokeGrant() {
-  if (!revokeGrantTarget.value) return
+  if (!revokeGrantTarget.value || !isOwner.value) return
   try {
     const res = await api.revokeGrant(revokeGrantTarget.value.id)
     ui.push('success', '已回收授权', [`≤ ${res.data.effective_within_seconds} 秒内入口与仓库权限同时失效；不影响其他人的授权。`])
@@ -62,18 +75,22 @@ async function revokeGrant() {
 }
 
 async function createShare(kind: 'preview' | 'production') {
+  if (!canWrite.value) return
+  busy.value = true
   try {
-    const env = kind === 'production' ? null : shares.value[0]?.branch ?? 'feat/order'
-    const res = await api.createShare(id, kind, env)
+    const env = projectState.environments.find((e) => e.kind === kind)
+    const res = await api.createShare(id, { envId: env?.id, envKind: kind, branch: env?.branch ?? null })
     ui.push('success', '已生成分享链接', [res.data.url, COPY.shareNotGrant])
     await load()
   } catch (e) {
     error.value = e
+  } finally {
+    busy.value = false
   }
 }
 
 async function revokeShare() {
-  if (!revokeShareTarget.value) return
+  if (!revokeShareTarget.value || !isOwner.value) return
   try {
     await api.revokeShare(revokeShareTarget.value.id)
     ui.push('success', '分享链接已撤销', [COPY.shareRevokeScope])
@@ -97,13 +114,14 @@ onMounted(load)
         <span class="badge">只有「可见」一档 · 上限 {{ limits.people }} 人 / {{ limits.groups }} 组</span>
       </div>
       <p class="infobox">{{ COPY.singleGrantLevel }} 拥有者是项目属性；授权人与项目组是数据关系，不是第四种角色。</p>
+      <p v-if="!isOwner" class="hint">你不是该项目拥有者，只能查看授权与分享；加授权、生成链接与撤销都要由拥有者操作。</p>
       <div class="row">
         <select v-model="subjectType">
           <option value="user">人员</option>
           <option value="group">项目组（≤ {{ limits.group_members }} 人）</option>
         </select>
         <input v-model="subjectName" type="text" placeholder="姓名或项目组名" style="min-width: 240px" />
-        <button class="btn primary" :disabled="!subjectName.trim()" @click="addGrant">添加授权</button>
+        <button class="btn primary" :disabled="!subjectName.trim() || !canWrite" @click="addGrant">添加授权</button>
       </div>
       <table>
         <thead>
@@ -117,7 +135,7 @@ onMounted(load)
             <td>可见</td>
             <td>{{ g.source === 'owner' ? '拥有者授权' : g.source }}</td>
             <td>{{ formatDateTime(g.created_at) }}</td>
-            <td><button class="btn danger" @click="revokeGrantTarget = g">回收</button></td>
+            <td><button class="btn danger" :disabled="!isOwner" @click="revokeGrantTarget = g">回收</button></td>
           </tr>
           <tr v-if="grants.length === 0"><td colspan="7" class="hint">还没有授权任何人。</td></tr>
         </tbody>
@@ -130,8 +148,8 @@ onMounted(load)
         <span class="hint">分享与授权独立：没有数据权限的人打开链接会 403</span>
       </div>
       <div class="row">
-        <button class="btn" @click="createShare('production')">生成正式环境链接</button>
-        <button class="btn" @click="createShare('preview')">生成预览链接</button>
+        <button class="btn" :disabled="!canWrite" @click="createShare('production')">生成正式环境链接</button>
+        <button class="btn" :disabled="!canWrite" @click="createShare('preview')">生成预览链接</button>
       </div>
       <table>
         <thead><tr><th>环境</th><th>分支</th><th>链接</th><th>创建人</th><th>状态</th><th>操作</th></tr></thead>
@@ -140,9 +158,9 @@ onMounted(load)
             <td>{{ s.env_kind === 'production' ? '正式' : '预览' }}</td>
             <td class="mono">{{ s.branch ?? '—' }}</td>
             <td class="mono">{{ s.url }}</td>
-            <td>{{ s.created_by }}</td>
+            <td>{{ typeof s.created_by === 'string' ? s.created_by : s.created_by.display_name }}</td>
             <td>{{ s.status === 'active' ? '有效' : `已撤销（${formatDateTime(s.revoked_at)}）` }}</td>
-            <td><button class="btn" :disabled="s.status !== 'active'" @click="revokeShareTarget = s">撤销分享</button></td>
+            <td><button class="btn" :disabled="s.status !== 'active' || !isOwner" @click="revokeShareTarget = s">撤销分享</button></td>
           </tr>
           <tr v-if="shares.length === 0"><td colspan="6" class="hint">还没有分享链接。</td></tr>
         </tbody>

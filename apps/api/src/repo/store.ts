@@ -2,7 +2,7 @@
  * 试跑用内存仓储：只为跑通契约，不是真实持久层。
  * 真实实现需接 PostgreSQL + 底座 API；ENV01–ENV09 未完成前不得声称已联调。
  */
-import type { AbnormalPreview, AuditRow, Environment, Project, Task, User } from '../types.js'
+import type { AbnormalPreview, AuditRow, Environment, GroupRow, Project, ShareLink, Task, User } from '../types.js'
 import { ROLE_OPS } from '../domain/permissions.js'
 
 export const T0 = '2026-11-20T09:20:00.000Z'
@@ -131,7 +131,10 @@ export function resetStore() {
   tasks.clear()
   audits.splice(0, audits.length)
   idempotency.clear()
+  shareLinks.splice(0, shareLinks.length)
   abnormalPreviews.splice(0, abnormalPreviews.length, ...structuredClone(ABNORMAL_SEED))
+  const grp = groups[0]
+  if (grp) grp.status = 'active'
   Object.assign(settings, structuredClone(SETTINGS_SEED))
   platform.authz_ok = true
   platform.dokploy_ok = true
@@ -140,6 +143,18 @@ export function resetStore() {
 export const tasks = new Map<string, Task>()
 export const audits: AuditRow[] = []
 export const idempotency = new Map<string, { requestHash: string; response: unknown; status: number }>()
+
+/**
+ * 分享链接（试跑内存表，与项目授权完全独立）。
+ * 真实实现：share_link 表只存 token_hash（data-model §4.5）；试跑不落明文 token，
+ * url 为演示域名（Q08 未定），不代表最终域名。
+ */
+export const shareLinks: ShareLink[] = []
+
+/** 项目组（试跑内存表）。成员/项目计数为只读展示字段，组上限 200 人。 */
+export const groups: GroupRow[] = [
+  { id: 'grp_platform', name: '平台研发组', member_count: 4, project_count: 2, status: 'active', member_limit: 200 },
+]
 
 const ABNORMAL_SEED: AbnormalPreview[] = [
   { id: 'env_abn_1', project_id: 'prj_trial_legacy', project_name: '旧版工单', branch: 'feat/refund', case: 'disabled_owner', state: 'sleeping', last_active_at: '2026-10-02T02:00:00.000Z', size_bytes: 300 * 1024 ** 2 },

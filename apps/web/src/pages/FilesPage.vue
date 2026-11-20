@@ -13,20 +13,28 @@ import { useUi } from '@/stores/ui'
 const route = useRoute()
 const id = String(route.params.id)
 const ui = useUi()
-const { state } = useProject(id)
+const { state, ensure } = useProject(id)
 const kind = ref<'production' | 'preview'>('production')
 const entries = ref<FileEntry[]>([])
 const error = ref<unknown>(null)
 const loading = ref(false)
+const ready = ref(false)
 const now = new Date('2026-11-20T09:20:00.000Z')
 
 const envId = computed(() => state.environments.find((e) => e.kind === kind.value)?.id ?? '')
+const noEnvironment = computed(() => ready.value && !envId.value)
 
 async function load() {
   loading.value = true
   error.value = null
   try {
-    if (!envId.value) throw new Error('该项目还没有对应环境；先创建预览或发布正式后再看文件。')
+    // 深链/刷新时项目与环境还没加载：先 ensure，再判断是否有环境（本地状态不报成服务端错误）
+    await ensure()
+    ready.value = true
+    if (!envId.value) {
+      entries.value = []
+      return
+    }
     const res = await api.files(id, envId.value, '/', ui.state.scenario)
     entries.value = res.data.items
   } catch (e) {
@@ -62,6 +70,14 @@ watch(kind, load)
       <p class="infobox">{{ COPY.filesReadOnly }} {{ COPY.filesBucketScope }}</p>
       <p v-if="kind === 'preview'" class="hint">当前环境：{{ state.environments.find((e) => e.kind === 'preview')?.branch ?? '（还没有预览）' }}</p>
       <div v-if="loading" class="center-note">加载中…</div>
+      <div v-else-if="state.error" class="center-note">
+        <ErrorNotice :error="state.error" compact />
+        <button class="btn" @click="load">重试</button>
+      </div>
+      <div v-else-if="noEnvironment" class="center-note">
+        <p>该项目还没有{{ kind === 'preview' ? '可查看的预览环境' : '正式环境' }}；先创建预览或发布正式后再看文件。</p>
+        <p class="hint">预览长期保留；正式发布不会删除预览。文件页只读，不提供在线删除/改写。</p>
+      </div>
       <table v-else>
         <thead>
           <tr><th>名称</th><th>类型</th><th class="num">大小</th><th>修改时间</th><th>操作</th></tr>

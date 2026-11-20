@@ -24,6 +24,7 @@ function entryOf(id: string): Entry {
 
 export function useProject(id: string) {
   const state = entryOf(id)
+  let inflight: Promise<void> | null = null
 
   async function load(): Promise<void> {
     state.loading = true
@@ -42,5 +43,15 @@ export function useProject(id: string) {
     }
   }
 
-  return { state, load }
+  /**
+   * 冷启动/深链入口用：已加载则直接返回，未加载才拉一次，并发调用合并成同一个请求。
+   * 子页（如文件页）先 `ensure()` 再取环境，避免在环境尚未加载时就把本地状态报成服务端错误。
+   */
+  function ensure(): Promise<void> {
+    if (state.project && !state.error) return Promise.resolve()
+    if (!inflight) inflight = load().finally(() => { inflight = null })
+    return inflight
+  }
+
+  return { state, load, ensure }
 }

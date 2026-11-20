@@ -35,7 +35,10 @@ export interface RequestOptions {
   body?: unknown
   query?: Record<string, string | number | boolean | undefined>
   idempotencyKey?: string
-  /** 故障注入（只在 Mock 模式生效，用于演示失败分支；真实 BFF 忽略未知参数会 400） */
+  /**
+   * 故障注入。Mock 模式在派发器内生效；接试跑 BFF 时作为 `?scenario=` 传给服务端，
+   * 只有 BFF 侧 `TRIAL_SCENARIO=1` 时才被采纳（生产 BFF 丢弃该参数，不报错）。
+   */
   scenario?: string
   signal?: AbortSignal
   retryReadOnly?: boolean
@@ -154,7 +157,7 @@ async function once<T>(path: string, opts: RequestOptions & { method: string }):
   if (!isGet(opts.method) && csrf) headers['X-CSRF-Token'] = csrf
   if (opts.idempotencyKey) headers['Idempotency-Key'] = opts.idempotencyKey
 
-  const res = await fetch(`${API_BASE}${path}${buildQuery(opts.query)}`, {
+  const res = await fetch(`${API_BASE}${path}${buildQuery({ ...opts.query, scenario: opts.scenario })}`, {
     method: opts.method,
     headers,
     credentials: 'same-origin',

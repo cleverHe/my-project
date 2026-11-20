@@ -36,6 +36,8 @@ export const api = {
 
   /** 试跑专用 Mock 登录（真实环境不存在该端点，只能走飞书 OAuth） */
   trialLogin: () => request<Me>('/auth/trial-login', { method: 'POST', body: {} }),
+  /** 试跑专用：把「试跑角色切换」落到服务端会话；生产 BFF 无此端点（会 404），前端捕获后保持只演示 */
+  trialRole: (role: 'user' | 'admin' | 'sysadmin') => request<Me>('/auth/trial-role', { method: 'POST', body: { role } }),
   loginStart: (redirect: string) => request<{ redirect_url: string }>('/auth/feishu/start', { method: 'POST', body: {}, query: { redirect } }),
   logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST', body: {} }),
 
@@ -91,8 +93,9 @@ export const api = {
   revokeGrant: (grantId: string) => request<{ revoked: boolean; effective_within_seconds: number }>(`/grants/${grantId}`, { method: 'DELETE' }),
 
   shares: (id: string) => request<{ items: ShareItem[] }>(`/projects/${id}/shares`),
-  createShare: (id: string, envKind: 'preview' | 'production', branch: string | null) =>
-    request<ShareItem>(`/projects/${id}/shares`, { method: 'POST', body: { env_kind: envKind, branch } }),
+  /** 同时带 `env_id`（api-spec 形状）与 `env_kind/branch`（Mock 派发器形状），由服务端取有效的那个 */
+  createShare: (id: string, env: { envId?: string; envKind: 'preview' | 'production'; branch: string | null }) =>
+    request<ShareItem>(`/projects/${id}/shares`, { method: 'POST', body: { env_id: env.envId, env_kind: env.envKind, branch: env.branch } }),
   revokeShare: (shareId: string) => request<{ revoked: boolean }>(`/shares/${shareId}`, { method: 'DELETE' }),
 
   backups: (id: string) => request<{ items: BackupPoint[]; retention_days: number }>(`/projects/${id}/backups`),

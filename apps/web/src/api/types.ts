@@ -186,7 +186,8 @@ export interface ShareItem {
   env_kind: 'preview' | 'production'
   branch: string | null
   url: string
-  created_by: string
+  /** BFF 返回 `{user_id, display_name}`；Mock 返回姓名字符串。展示层统一取姓名。 */
+  created_by: string | { user_id: string; display_name: string }
   created_at: string
   status: 'active' | 'revoked'
   revoked_at: string | null

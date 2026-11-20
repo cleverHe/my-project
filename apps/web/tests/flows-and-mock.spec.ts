@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { useSession } from '@/stores/session'
 import { abnormalPreviews } from '@/api/mock/db'
 import { applyDeploySuccess, dispatch } from '@/api/mock/handlers'
 import { explainError, formatError } from '@/domain/errors'
@@ -81,6 +82,33 @@ describe('Mock 契约与错误口径', () => {
     const unknown = explainError({ errorCode: 'weird.code', message: 'x', nextStep: 'y', traceId: 'trc_y' })
     expect(unknown.what).toBe('x')
     expect(unknown.nextStep).toBe('y')
+  })
+
+  it('登录/切换账号后试跑角色以服务端会话为准（不沿用残留角色，QA-DEF-06）', () => {
+    const session = useSession()
+    session.switchTrialRole('sysadmin')
+    expect(session.role.value).toBe('sysadmin')
+    session.adopt({
+      user_id: 'usr_trial_lin',
+      display_name: '林小满',
+      role: 'user',
+      operations: [],
+      feishu_status: 'active',
+    })
+    expect(session.role.value).toBe('user')
+    session.signOut()
+  })
+
+  it('分享创建人兼容字符串与对象两种返回（BFF 返回 {user_id, display_name}）', () => {
+    const r = dispatch({ method: 'POST', path: '/projects/prj_trial_ai_cs/shares', body: { env_kind: 'production', branch: null }, auth, traceId: 'trc_t' })
+    expect(r.ok).toBe(true)
+    const list = dispatch({ method: 'GET', path: '/projects/prj_trial_ai_cs/shares', auth, traceId: 'trc_t' })
+    expect(list.ok).toBe(true)
+    if (list.ok) {
+      const items = (list.data as { items: { url: string; created_by: unknown }[] }).items
+      expect(items.length).toBeGreaterThan(0)
+      expect(['string', 'object']).toContain(typeof items[items.length - 1]!.created_by)
+    }
   })
 
   it('applyDeploySuccess 只写部署记录，不删除预览（GAP-03）', () => {

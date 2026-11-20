@@ -10,8 +10,8 @@ import cookie from '@fastify/cookie'
 import { createHash, randomUUID } from 'node:crypto'
 import { errorBody, statusOf, type ErrorCode } from './domain/errors.js'
 import { adjustParamVerdict, hasOp, requiresOp, PERMISSION_CACHE_TTL_MS, type Role } from './domain/permissions.js'
-import { abnormalPreviews, audits, idempotency, me, platform, projects, projectById, settings, tasks, templates, userById, users } from './repo/store.js'
-import type { AuditRow, Environment, Project, Task } from './types.js'
+import { abnormalPreviews, audits, groups, idempotency, me, platform, projects, projectById, settings, shareLinks, tasks, templates, userById, users } from './repo/store.js'
+import type { AuditRow, Environment, Project, ShareLink, Task } from './types.js'
 
 const T0 = '2026-11-20T09:20:00.000Z'
 /** 试跑日志样本（已脱敏；不含令牌/连接串；正式实现从转存读取） */
@@ -20,8 +20,7 @@ const LOG_LINES = [
   { at: '2026-11-20T08:39:40.000Z', level: 'warn', message: 'user_id=usr_trial_lin request slow 1832ms path=/api/orders' },
   { at: '2026-11-20T08:38:00.000Z', level: 'error', message: 'upstream timeout after 3000ms (traceId=trc_trial_1)' },
 ] as const
-const DEPLOY = {
-  queueLimit: 10,
+const DEPLOY = {  queueLimit: 10,
   concurrency: 3,
   timeoutMs: 30 * 60 * 1000,
   pollMs: 3_000,
@@ -37,6 +36,21 @@ const DEPLOY = {
   permissionRevokeSeconds: 30,
   mcpRevokeSeconds: 60,
   publishConfirmSeconds: 300,
+}
+
+/** 试跑角色 → 账号映射（真实环境由飞书 OAuth + 内部权限系统给出，不存在此表） */
+const ROLE_ACTOR: Record<string, string> = { user: 'usr_trial_lin', admin: 'usr_trial_zhou', sysadmin: 'usr_trial_zheng' }
+const ROLES = new Set(['user', 'admin', 'sysadmin'])
+
+/** 授权行 ID：`gr~<projectId>~<user|group>~<subjectId>`（`~` 在路径里合法，且不参与路由参数替换） */
+function grantIdOf(projectId: string, subjectType: 'user' | 'group', subjectId: string): string {
+  return `gr~${projectId}~${subjectType}~${subjectId}`
+}
+
+function parseGrantId(grantId: string): { projectId: string; subjectType: 'user' | 'group'; subjectId: string } | null {
+  const m = /^gr~([^~]+)~(user|group)~(.+)$/.exec(grantId)
+  if (!m) return null
+  return { projectId: m[1]!, subjectType: m[2] as 'user' | 'group', subjectId: m[3]! }
 }
 
 export interface AppOptions {
@@ -124,8 +138,12 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     // 真实环境：会话 Cookie 由 OAuth 回调建立，前端不可读；这里只做试跑替身
     // 试跑：QA 契约脚本以 X-QA-Role 声明身份（真实环境不存在该头，且 allowScenario=false 时忽略）
     const qaRole = allowScenario ? (req.headers['x-qa-role'] as string | undefined) : null
-    const qaUser = qaRole ? ({ user: 'usr_trial_lin', admin: 'usr_trial_zhou', sysadmin: 'usr_trial_zheng' } as Record<string, string>)[qaRole] : undefined
-    const userId = qaUser ?? headerUser ?? cookieUser
+    const qaUser = qaRole ? ROLE_ACTOR[qaRole] : undefined
+    // 试跑：UI 角色切换落服务端（写 trial_role Cookie）。真实环境没有这个 Cookie，
+    // 角色只来自 OAuth + 内部权限系统；此处仍是试跑替身，不改变权限模型。
+    const cookieRole = allowScenario ? (req.cookies['trial_role'] ?? null) : null
+    const roleUser = cookieRole ? ROLE_ACTOR[cookieRole] : undefined
+    const userId = qaUser ?? roleUser ?? headerUser ?? cookieUser
     const u = userId ? userById(userId) : undefined
     const csrfFromCookie = req.cookies['trial_csrf'] ?? null
     req.actor =
@@ -144,7 +162,7 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
 
   function publicRoutes(req: FastifyRequest): boolean {
     const p = req.url.split('?')[0] ?? ''
-    return p.endsWith('/healthz') || p.endsWith('/health') || p.includes('/auth/trial-login') || p.includes('/auth/feishu/start') || p.includes('/setup/status')
+    return p.endsWith('/healthz') || p.endsWith('/health') || p.includes('/auth/trial-login') || p.includes('/auth/trial-role') || p.includes('/auth/feishu/start') || p.includes('/setup/status')
   }
 
   function guard(req: FastifyRequest, reply: FastifyReply): boolean {
@@ -324,7 +342,34 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     const csrf = `csrf_${randomUUID()}`
     reply.setCookie('trial_user', me.user_id, { httpOnly: true, sameSite: 'lax', path: '/' })
     reply.setCookie('trial_csrf', csrf, { httpOnly: false, sameSite: 'lax', path: '/' })
+    // 新会话默认回到普通用户，避免上一个会话的角色渗到下一次走查
+    reply.setCookie('trial_role', 'user', { httpOnly: true, sameSite: 'lax', path: '/' })
     return reply.code(200).send({ ...me, trial_only: true })
+  })
+
+  /**
+   * 试跑专用：把「试跑角色切换」落到服务端会话（写 trial_role Cookie）。
+   * 真实环境没有这个端点：应用角色只来自内部权限系统，前端不得自定角色。
+   * 幂等且不写业务审计（改的是试跑会话，不是业务数据）。
+   */
+  app.post('/api/v1/auth/trial-role', async (req, reply) => {
+    if (!allowScenario) return fail(reply, 'request.path_unknown', req.traceId, { note: '试跑角色切换仅在 TRIAL_SCENARIO=1 下可用。' })
+    const role = String(((req.body ?? {}) as { role?: unknown }).role ?? '')
+    if (!ROLES.has(role)) return fail(reply, 'request.param_invalid', req.traceId, { field: 'role', allowed: ['user', 'admin', 'sysadmin'] })
+    const u = userById(ROLE_ACTOR[role]!)
+    if (!u) return fail(reply, 'request.param_invalid', req.traceId, { field: 'role' })
+    reply.setCookie('trial_user', u.user_id, { httpOnly: true, sameSite: 'lax', path: '/' })
+    reply.setCookie('trial_role', role, { httpOnly: true, sameSite: 'lax', path: '/' })
+    return {
+      user_id: u.user_id,
+      display_name: u.display_name,
+      role: u.role,
+      groups: u.groups,
+      operations: u.operations,
+      session_expires_at: '2026-11-20T17:20:00.000Z',
+      trial_only: true,
+      note: '仅试跑会话：应用角色仍由服务端权限位校验，前端不成为安全边界。',
+    }
   })
 
   const feishuStart = async (req: FastifyRequest) => {
@@ -338,6 +383,7 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   app.post('/api/v1/auth/logout', async (_req, reply) => {
     reply.clearCookie('trial_user', { path: '/' })
     reply.clearCookie('trial_csrf', { path: '/' })
+    reply.clearCookie('trial_role', { path: '/' })
     return { ok: true }
   })
 
@@ -347,7 +393,8 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   })
 
   // ---------------- 项目 ----------------
-  const cardOf = (p: Project) => {
+  const cardOf = (p: Project, req: FastifyRequest) => {
+    const rel = relationOfProject(p, req.actor!.id, userById(req.actor!.id)?.groups ?? [])
     const previews = p.environments.filter((e) => e.kind === 'preview')
     const recent = previews[0] ?? null
     const prod = p.environments.find((e) => e.kind === 'production') ?? null
@@ -357,8 +404,8 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
       slug: p.slug,
       status: p.status,
       owner: { user_id: p.owner_id, display_name: p.owner_name },
-      relation: p.relation,
-      relation_label: p.relation_label,
+      relation: rel.relation,
+      relation_label: rel.relation_label,
       preview: {
         state: previews.length === 0 ? 'not_created' : recent?.display_state ?? 'not_created',
         total: previews.length,
@@ -377,9 +424,9 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   app.get('/api/v1/projects', async (req) => {
     const q = req.query as Record<string, string | undefined>
     const items = projects
-      .filter((p) => (req.actor!.role === 'sysadmin' ? true : p.relation !== 'none'))
+      .filter((p) => (req.actor!.role === 'sysadmin' ? true : relationOfProject(p, req.actor!.id, userById(req.actor!.id)?.groups ?? []).relation !== 'none'))
       .filter((p) => (q.status === 'soft_deleted' ? p.status === 'soft_deleted' : q.status === 'all' ? true : p.status === 'active'))
-      .map(cardOf)
+      .map((p) => cardOf(p, req))
     return { items, total: items.length, page: 1, page_size: 20, has_next: false }
   })
 
@@ -388,7 +435,7 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     const p = visibleProject(req, id)
     if (!p) return fail(reply, 'project.not_found', req.traceId)
     return {
-      ...cardOf(p),
+      ...cardOf(p, req),
       created_at: p.created_at,
       grant_summary: { people: p.grant_people.length, groups: p.grant_groups.length, limit_people: 50, limit_groups: 10 },
       gate: p.gate,
@@ -467,7 +514,7 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     return write(req, reply, { action: 'project.create', target: { kind: 'project', id: created.id }, detail: name }, () => {
       projects.push(created)
       tasks.set(taskId, task)
-      const out = { project: cardOf(created), task: { id: taskId } }
+      const out = { project: cardOf(created, req), task: { id: taskId } }
       rememberIdempotency(req, 201, out)
       return { status: 201, body: out }
     })
@@ -801,58 +848,175 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   })
 
   // ---------------- 授权 / 分享 / 备份 / 接入包 ----------------
+  /**
+   * 契约：`api-spec §9.1` + `data-model §4.4`。列表项字段固定为
+   * `{id, subject_type, subject_id, subject_name, subject_status, level, source, created_at, revoked_at}`；
+   * `level` 只有 `visible` 一档。列表永远不返回明文账号/邮箱。
+   */
   app.get('/api/v1/projects/:id/grants', async (req, reply) => {
     const { id } = req.params as { id: string }
     const p = visibleProject(req, id)
     if (!p) return fail(reply, 'project.not_found', req.traceId)
+    const people = p.grant_people.map((uid) => {
+      const u = userById(uid)
+      return {
+        id: grantIdOf(p.id, 'user', uid),
+        subject_type: 'user' as const,
+        subject_id: uid,
+        subject_name: u?.display_name ?? uid,
+        subject_status: u ? (u.status === 'active' ? ('active' as const) : ('disabled' as const)) : ('member_removed' as const),
+        level: 'visible' as const,
+        source: 'owner' as const,
+        created_at: p.created_at,
+        revoked_at: null,
+      }
+    })
+    const groupItems = p.grant_groups.map((gid) => {
+      const g = groups.find((x) => x.id === gid)
+      return {
+        id: grantIdOf(p.id, 'group', gid),
+        subject_type: 'group' as const,
+        subject_id: gid,
+        subject_name: g?.name ?? gid,
+        subject_status: g && g.status === 'active' ? ('active' as const) : ('group_dissolved' as const),
+        level: 'visible' as const,
+        source: 'owner' as const,
+        created_at: p.created_at,
+        revoked_at: null,
+      }
+    })
     return {
-      items: p.grant_people.map((uid) => ({ id: `gr_${uid}`, kind: 'person', name: userById(uid)?.display_name ?? uid, subject_id: uid, level: '见权限模型', level_note: '授权默认可见数据；写操作仍按自身权限模型判定' })),
+      items: [...people, ...groupItems],
       level_options: ['visible'],
       limits: { people: 50, groups: 10, group_members: 200 },
-      note: '授权与分享相互独立；拿到分享链接仍需登录且有数据权限。',
+      note: '授权与分享相互独立；拿到分享链接仍需登录且有数据权限。授权只有「可见」一档，写能力由本人权限模型决定。',
     }
   })
 
+  /**
+   * 同时接受两种请求形状（只做形状兼容，不改变业务语义）：
+   * - `api-spec §9.1`：`{"subject_type":"user|group","subject_id":"…"}`
+   * - 试跑门户按姓名加人：`{"subjects":[{"type":"user|group","name":"…"}]}`
+   * 重复授权按幂等处理：逐项返回 `ok:false, errorCode:"grant.exists"`，不产生第二行（uq_grant）。
+   */
   app.post('/api/v1/projects/:id/grants', async (req, reply) => {
     const { id } = req.params as { id: string }
-    const p = visibleProject(req, id)
+    const owned = ownerProject(req, id)
+    if (owned === 'FORBIDDEN') return fail(reply, 'authz.forbidden', req.traceId, { op: 'grant:write', nextStep: '只有项目拥有者能加授权；需要时请拥有者操作或先转让项目。' })
+    const p = owned
     if (!p) return fail(reply, 'project.not_found', req.traceId)
-    const subjects = ((req.body ?? {}) as { subjects?: { name: string }[] }).subjects ?? []
-    return write(req, reply, { action: 'grant.add', target: { kind: 'project', id }, detail: subjects.map((s) => s.name).join(',') }, () => {
+    const body = (req.body ?? {}) as {
+      subject_type?: string
+      subject_id?: string
+      subjects?: { type?: string; name?: string; id?: string }[]
+    }
+    const subjects = Array.isArray(body.subjects)
+      ? body.subjects
+      : body.subject_type && body.subject_id
+        ? [{ type: body.subject_type, id: body.subject_id }]
+        : []
+    if (subjects.length === 0) return fail(reply, 'request.param_invalid', req.traceId, { fields: ['subject_type', 'subject_id'], note: '或使用 subjects[] 批量形状。' })
+    if (body && typeof body === 'object' && 'level' in (body as Record<string, unknown>)) {
+      return fail(reply, 'request.param_invalid', req.traceId, { field: 'level', note: '授权只有「可见」一档，不接受 level。' })
+    }
+    return write(req, reply, { action: 'grant.add', target: { kind: 'project', id }, detail: subjects.map((s) => s.name ?? s.id ?? '').join(',') }, () => {
       const results = subjects.map((s) => {
-        const u = users.find((x) => x.display_name === s.name || x.user_id === s.name)
-        if (!u) return { name: s.name, ok: false, errorCode: 'authz.forbidden', reason: '找不到该账号，需由管理员核对后重试。' }
+        const type = s.type === 'group' ? 'group' : 'user'
+        const key = String(s.id ?? s.name ?? '')
+        const label = String(s.name ?? key)
+        if (type === 'group') {
+          const g = groups.find((x) => x.id === key || x.name === key)
+          if (!g || g.status !== 'active') return { name: label, ok: false, errorCode: 'grant.subject_not_found', reason: '项目组不存在或已解散，需由管理员核对后重试。' }
+          if (p.grant_groups.includes(g.id)) return { name: label, ok: false, errorCode: 'grant.exists', reason: '该对象已有授权（只有「可见」一档）。' }
+          p.grant_groups.push(g.id)
+          return { name: label, ok: true }
+        }
+        const u = users.find((x) => x.user_id === key || x.display_name === key)
+        if (!u) return { name: label, ok: false, errorCode: 'authz.forbidden', reason: '找不到该账号，需由管理员核对后重试。' }
+        if (u.status !== 'active') return { name: label, ok: false, errorCode: 'grant.subject_not_found', reason: '账号已停用，无法新增授权。' }
+        if (p.grant_people.includes(u.user_id)) return { name: label, ok: false, errorCode: 'grant.exists', reason: '该对象已有授权（只有「可见」一档）。' }
         p.grant_people.push(u.user_id)
-        return { name: s.name, ok: true }
+        return { name: label, ok: true }
       })
-      return { body: { results, applied: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length } }
+      const applied = results.filter((r) => r.ok).length
+      const failed = results.length - applied
+      return { status: failed > 0 ? 207 : 200, body: { results, applied, failed } }
     })
   })
 
   app.delete('/api/v1/grants/:grantId', async (req, reply) => {
     const grantId = (req.params as { grantId: string }).grantId
-    return write(req, reply, { action: 'grant.revoke', target: { kind: 'grant', id: grantId } }, () => ({ body: { revoked: true, effective_within_seconds: DEPLOY.permissionRevokeSeconds } }))
+    const parsed = parseGrantId(grantId)
+    const owned = parsed ? ownerProject(req, parsed.projectId) : null
+    if (owned === 'FORBIDDEN') return fail(reply, 'authz.forbidden', req.traceId, { op: 'grant:write', nextStep: '只有项目拥有者能回收授权；需要时请拥有者操作。' })
+    const p = owned
+    if (!parsed || !p) return fail(reply, 'grant.not_found', req.traceId)
+    const exists = parsed.subjectType === 'user' ? p.grant_people.includes(parsed.subjectId) : p.grant_groups.includes(parsed.subjectId)
+    if (!exists) return fail(reply, 'grant.not_found', req.traceId)
+    return write(req, reply, { action: 'grant.revoke', target: { kind: 'grant', id: grantId } }, () => {
+      if (parsed.subjectType === 'user') p.grant_people = p.grant_people.filter((x) => x !== parsed.subjectId)
+      else p.grant_groups = p.grant_groups.filter((x) => x !== parsed.subjectId)
+      // 只写 revoked_at 语义（内存替身里表现为从列表移除）；不删除项目、不回收分享
+      return { body: { revoked: true, effective_within_seconds: DEPLOY.permissionRevokeSeconds, revoked_at: new Date().toISOString() } }
+    })
   })
 
+  /** `api-spec §9.3`：只返回未撤销与已撤销条目；不含明文 token（url 为展示用链接） */
   app.get('/api/v1/projects/:id/shares', async (req, reply) => {
     const { id } = req.params as { id: string }
     if (!visibleProject(req, id)) return fail(reply, 'project.not_found', req.traceId)
-    return { items: [], note: '分享只生成链接；对方仍需登录并有该项目数据权限。' }
+    return {
+      items: shareLinks.filter((s) => s.project_id === id),
+      note: '分享只生成链接；对方仍需登录并有该项目数据权限。撤销分享只让该链接失效，不授予也不回收项目授权。',
+    }
   })
 
+  /**
+   * 接受 `{"env_id":"env_…"}`（api-spec）或试跑门户的 `{"env_kind","branch"}`。
+   * 创建后写入分享表，GET 同源读取，保证「创建→可见→可撤销」。
+   */
   app.post('/api/v1/projects/:id/shares', async (req, reply) => {
     const { id } = req.params as { id: string }
-    const p = visibleProject(req, id)
+    const owned = ownerProject(req, id)
+    if (owned === 'FORBIDDEN') return fail(reply, 'authz.forbidden', req.traceId, { op: 'share:write', nextStep: '只有项目拥有者能生成分享链接；需要时请拥有者操作。' })
+    const p = owned
     if (!p) return fail(reply, 'project.not_found', req.traceId)
     const body = (req.body ?? {}) as Record<string, unknown>
-    const env = p.environments.find((e) => e.kind === String(body.env_kind) && (String(body.env_kind) === 'production' || e.branch === String(body.branch)))
-    if (!env) return fail(reply, 'request.invalid', req.traceId, { field: 'branch' })
-    return write(req, reply, { action: 'share.create', target: { kind: 'environment', id: env.id } }, () => ({ status: 201, body: { id: `shr_${randomUUID().slice(0, 8)}`, env_kind: env.kind, branch: env.branch, url: env.url, created_at: new Date().toISOString(), note: '链接不授予权限；未登录会 302 到登录。' } }))
+    const env = body.env_id
+      ? p.environments.find((e) => e.id === String(body.env_id))
+      : p.environments.find((e) => e.kind === String(body.env_kind) && (String(body.env_kind) === 'production' || e.branch === String(body.branch)))
+    if (!env) return fail(reply, 'request.invalid', req.traceId, { field: body.env_id ? 'env_id' : 'branch' })
+    return write(req, reply, { action: 'share.create', target: { kind: 'environment', id: env.id } }, () => {
+      const row: ShareLink = {
+        id: `shr_${randomUUID().slice(0, 8)}`,
+        project_id: p.id,
+        env_id: env.id,
+        env_kind: env.kind,
+        branch: env.branch,
+        url: `https://${env.slug}.deploy.internal/s/${randomUUID().slice(0, 6)}`,
+        created_by: { user_id: req.actor!.id, display_name: req.actor!.name },
+        created_at: new Date().toISOString(),
+        expires_at: null,
+        status: 'active',
+        revoked_at: null,
+      }
+      shareLinks.unshift(row)
+      return { status: 201, body: { ...row, note: '链接不授予权限；未登录会 302 到登录。' } }
+    })
   })
 
   const revokeShare = async (req: FastifyRequest, reply: FastifyReply) => {
     const shareId = (req.params as { shareId?: string; id?: string }).shareId ?? (req.params as { id?: string }).id ?? ''
-    return write(req, reply, { action: 'share.revoke', target: { kind: 'share', id: shareId } }, () => ({ body: { revoked: true } }))
+    const row = shareLinks.find((s) => s.id === shareId)
+    if (!row) return fail(reply, 'share.not_found', req.traceId)
+    const owned = ownerProject(req, row.project_id)
+    if (owned === 'FORBIDDEN') return fail(reply, 'authz.forbidden', req.traceId, { op: 'share:write', nextStep: '只有项目拥有者能撤销分享；需要时请拥有者操作。' })
+    if (!owned) return fail(reply, 'share.not_found', req.traceId)
+    return write(req, reply, { action: 'share.revoke', target: { kind: 'share', id: shareId } }, () => {
+      row.status = 'revoked'
+      row.revoked_at = new Date().toISOString()
+      return { body: { revoked: true, effective_within_seconds: DEPLOY.permissionRevokeSeconds, revoked_at: row.revoked_at, note: '只影响这一条链接；不改变任何人的项目授权。' } }
+    })
   }
   // api-spec §9.3 规范形状 `DELETE /shares/{id}`；试跑前端仍用 `POST /shares/{id}:revoke`
   app.delete('/api/v1/shares/:id', revokeShare)
@@ -953,11 +1117,21 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     })
   })
 
-  app.get('/api/v1/admin/groups', async () => ({ items: [{ id: 'grp_platform', name: '平台研发组', members: 4, projects: 2 }], member_limit: 200 }))
+  app.get('/api/v1/admin/groups', async () => ({
+    items: groups.map((g) => ({ id: g.id, name: g.name, member_count: g.member_count, project_count: g.project_count, status: g.status, member_limit: g.member_limit })),
+    member_limit: 200,
+    note: '组是授权对象，不是角色；单组 ≤200 人。系统管理员是否可读组列表为待确认（T-01），本版按 admin:group 判定。',
+  }))
 
   app.post('/api/v1/admin/groups/:id/dissolve', async (req, reply) => {
     const id = (req.params as { id: string }).id
-    return write(req, reply, { action: 'admin.group.dissolve', target: { kind: 'group', id } }, () => ({ body: { dissolved: true, note: '解散只解除项目组数据关系，不删除项目与成员账号。' } }))
+    const g = groups.find((x) => x.id === id)
+    if (!g) return fail(reply, 'request.invalid', req.traceId, { field: 'group_id' })
+    if (g.status !== 'active') return fail(reply, 'request.invalid', req.traceId, { field: 'group_id', note: '该组已解散。' })
+    return write(req, reply, { action: 'admin.group.dissolve', target: { kind: 'group', id } }, () => {
+      g.status = 'dissolved'
+      return { body: { dissolved: true, status: g.status, note: '解散只解除项目组数据关系，不删除项目与成员账号；依赖该组的授权失效。' } }
+    })
   })
 
   app.get('/api/v1/admin/platform', async (req) => ({
@@ -1478,10 +1652,33 @@ function busy(envId: string): boolean {
   return [...tasks.values()].some((t) => t.status === 'running' && (t as Task & { container?: string }).container === envId)
 }
 
+/**
+ * 授权/分享的写操作只由项目拥有者发起（README 5.8：被授权人不能再授权）。
+ * 系统管理员不代发：需拥有者本人操作或走转让；返回 403 而不是 404，因为对方本来能看到这个项目。
+ */
+function ownerProject(req: FastifyRequest, id: string): Project | 'FORBIDDEN' | null {
+  const p = projectById(id)
+  if (!p) return null
+  if (p.status === 'soft_deleted') return null
+  return p.owner_id === req.actor!.id && req.actor!.role !== 'sysadmin' ? p : 'FORBIDDEN'
+}
+
+/**
+ * 数据关系按「当前请求者」算，不能用种子里的固定 relation：
+ * 拥有者 / 被授权人 / 项目组 / 无权限 决定看得到什么，也决定能否做授权、分享等写操作。
+ */
+export function relationOfProject(p: Project, actorId: string, actorGroups: string[]): { relation: Project['relation']; relation_label: string } {
+  if (p.owner_id === actorId) return { relation: 'owner', relation_label: '你是拥有者' }
+  if (p.grant_people.includes(actorId)) return { relation: 'granted', relation_label: `来自：${p.owner_name} 授权` }
+  const hit = p.grant_groups.find((g) => actorGroups.includes(g))
+  if (hit) return { relation: 'group', relation_label: `来自：项目组 ${groups.find((g) => g.id === hit)?.name ?? hit}` }
+  return { relation: 'none', relation_label: '无权访问' }
+}
+
 function visibleProject(req: FastifyRequest, id: string): Project | null {
   const p = projectById(id)
   if (!p) return null
   if (p.status === 'soft_deleted') return p
   if (req.actor!.role === 'sysadmin') return p
-  return p.relation === 'none' ? null : p
+  return relationOfProject(p, req.actor!.id, userById(req.actor!.id)?.groups ?? []).relation === 'none' ? null : p
 }

@@ -194,7 +194,7 @@ async function sharePreview(envId: string) {
   const env = previews.value.find((e) => e.id === envId)
   if (!env) return
   try {
-    const res = await api.createShare(id, 'preview', env.branch ?? null)
+    const res = await api.createShare(id, { envId: env.id, envKind: 'preview', branch: env.branch ?? null })
     ui.push('success', '分享链接已生成', [res.data.url, COPY.shareNotGrant])
   } catch (e) {
     error.value = e

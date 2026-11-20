@@ -105,6 +105,32 @@ export interface AuditRow {
   trace_id: string
 }
 
+/** 分享链接（与项目授权独立；撤销只让本条链接失效，不授予/回收任何项目授权） */
+export interface ShareLink {
+  id: string
+  project_id: string
+  env_id: string
+  env_kind: 'preview' | 'production'
+  branch: string | null
+  /** 展示用链接（不返回明文 token；真实实现只存 token_hash） */
+  url: string
+  created_by: { user_id: string; display_name: string }
+  created_at: string
+  expires_at: string | null
+  status: 'active' | 'revoked'
+  revoked_at: string | null
+}
+
+/** 项目组（授权对象，不是角色） */
+export interface GroupRow {
+  id: string
+  name: string
+  member_count: number
+  project_count: number
+  status: 'active' | 'dissolved'
+  member_limit: number
+}
+
 export interface AbnormalPreview {
   id: string
   project_id: string
