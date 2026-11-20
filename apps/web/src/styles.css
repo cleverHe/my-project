@@ -1,0 +1,257 @@
+:root {
+  color-scheme: light;
+  --c-text: #111827;
+  --c-sub: #6b7280;
+  --c-line: #e5e7eb;
+  --c-primary: #1d4ed8;
+  --c-bg: #f5f6f8;
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  color: var(--c-text);
+  background: var(--c-bg);
+  font-size: 13px;
+  line-height: 1.6;
+}
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+}
+h1 {
+  font-size: 18px;
+}
+h2 {
+  font-size: 15px;
+}
+h3 {
+  font-size: 13px;
+}
+a {
+  color: var(--c-primary);
+}
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 1180px;
+}
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.page-head .sub {
+  color: var(--c-sub);
+  font-size: 12px;
+}
+.panel {
+  background: #fff;
+  border: 1px solid var(--c-line);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.grow {
+  flex: 1;
+}
+.grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+.btn {
+  border: 1px solid var(--c-line);
+  background: #fff;
+  color: var(--c-text);
+  border-radius: 6px;
+  padding: 5px 11px;
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.btn:hover:not(:disabled) {
+  border-color: #c7d2fe;
+}
+.btn.primary {
+  background: var(--c-primary);
+  border-color: var(--c-primary);
+  color: #fff;
+}
+.btn.danger {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #fff;
+}
+.btn.ghost {
+  background: transparent;
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #4b5563;
+}
+.field > span {
+  font-weight: 500;
+}
+input[type='text'],
+input[type='number'],
+select,
+textarea {
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 13px;
+  background: #fff;
+  color: var(--c-text);
+  font-family: inherit;
+}
+textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+th,
+td {
+  text-align: left;
+  padding: 7px 8px;
+  border-bottom: 1px solid #f0f1f3;
+  vertical-align: top;
+}
+th {
+  color: var(--c-sub);
+  font-weight: 500;
+  background: #fafafa;
+  white-space: nowrap;
+}
+td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.hint {
+  color: var(--c-sub);
+  font-size: 12px;
+}
+.warnbox {
+  border: 1px solid #ffd8a8;
+  background: #fffbf5;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #8a4b00;
+}
+.infobox {
+  border: 1px solid #c7d9ff;
+  background: #f5f9ff;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #1e3a8a;
+}
+.okbox {
+  border: 1px solid #b7e4c7;
+  background: #f4fbf7;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #14642f;
+}
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--c-line);
+  flex-wrap: wrap;
+}
+.tabs a,
+.tabs button {
+  border: none;
+  background: transparent;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--c-sub);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+.tabs a.active,
+.tabs button.active {
+  color: var(--c-primary);
+  border-bottom-color: var(--c-primary);
+  font-weight: 600;
+}
+.kv {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 6px 12px;
+  font-size: 12px;
+}
+.kv dt {
+  color: var(--c-sub);
+}
+.kv dd {
+  margin: 0;
+}
+.badge {
+  font-size: 11px;
+  border: 1px solid var(--c-line);
+  border-radius: 4px;
+  padding: 0 5px;
+  color: var(--c-sub);
+  background: #fafafa;
+}
+.checkbox {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  font-size: 12px;
+}
+.center-note {
+  padding: 40px;
+  text-align: center;
+  color: var(--c-sub);
+}
