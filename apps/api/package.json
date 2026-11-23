@@ -1,0 +1,25 @@
+{
+  "name": "@my-project/api",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "门户 BFF（试跑实现）：按 api-spec v1.0 提供端点；不直连底座、不持有前端可读凭据",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "verify": "npm run typecheck && npm run test && npm run build"
+  },
+  "dependencies": {
+    "fastify": "^4.28.1",
+    "@fastify/cookie": "^9.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^3.2.7"
+  }
+}

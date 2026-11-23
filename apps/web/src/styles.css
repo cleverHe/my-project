@@ -1,0 +1,642 @@
+/* =============================================================================
+ * 视觉基线：继承配置平台 abs_console_client 现行 Arco 主题（visual-baseline v1.1）
+ * 取证来源：absystem/abs_console_client @ feature/proto_v1_full
+ *           SHA c16620b508b9fafe92ad626b30e83c9618bf9b36
+ *           文件 src/assets/style/global.less、src/projects/gm/components/list.shell/index.vue
+ * 说明：本工程未安装 Arco 组件库，按基线用同名语义 Token + 等价 CSS 还原；
+ *       「等价实现」不等于与 Arco 同组件同构。不升级 Vue/Vite/TS，不引入 GM 业务。
+ * ========================================================================== */
+:root {
+  color-scheme: light;
+
+  /* Arco 语义色（值取自 Arco 主题变量；不另造品牌色/字体/阴影体系） */
+  --primary-1: #e8f3ff;
+  --primary-5: #4080ff;
+  --primary-6: #165dff;
+  --primary-7: #0e42d2;
+  --success-1: #e8ffea;
+  --success-6: #00b42a;
+  --warning-1: #fff7e8;
+  --warning-6: #ff7d00;
+  --danger-1: #ffece8;
+  --danger-6: #f53f3f;
+  --purple-1: #f5e8ff;
+  --purple-6: #722ed1;
+  --color-text-1: #1d2129;
+  --color-text-2: #4e5969;
+  --color-text-3: #86909c;
+  --color-text-4: #c9cdd4;
+  --color-neutral-1: #f7f8fa;
+  --color-neutral-2: #f2f3f5;
+  --color-neutral-3: #e5e6eb;
+  --color-neutral-4: #c9cdd4;
+  --color-border-1: #f2f3f5;
+  --color-border-2: #e5e6eb;
+  --color-border-3: #c9cdd4;
+  --color-fill-1: #f7f8fa;
+  --color-fill-2: #f2f3f5;
+  --color-fill-3: #e5e6eb;
+  --color-bg-1: #ffffff; /* 页面底色 */
+  --color-bg-2: #ffffff; /* 容器/卡片底（与 bg-1 同值，不当作灰底） */
+  --color-bg-3: #f7f8fa;
+  --color-bg-4: #f2f3f5;
+
+  /* Arco 圆角：列表面板用 small（ListShell 源码值），卡片/弹框用 console-panel-radius */
+  --border-radius-small: 2px;
+  --border-radius-medium: 4px;
+  --border-radius-large: 8px;
+
+  /* 配置平台尺寸 Token（--console-* / --playdayy-*，值照抄 global.less） */
+  --playdayy-size-1: 4px;
+  --playdayy-size-2: 8px;
+  --playdayy-size-3: 12px;
+  --playdayy-size-4: 16px;
+  --playdayy-size-5: 20px;
+  --playdayy-size-6: 24px;
+  --playdayy-size-7: 32px;
+  --console-topbar-h: 52px;
+  --console-sider-w: 216px;
+  --console-control-h: 34px;
+  --console-form-h: 36px;
+  --console-radius-panel: 12px;
+  --console-radius-control: 7px;
+  --console-table-head-h: 42px;
+  --console-row-h: 52px;
+  --console-row-compact-h: 47px;
+  --console-pagination-h: 52px;
+  --console-space-1: 4px;
+  --console-space-2: 8px;
+  --console-space-3: 12px;
+  --console-space-4: 16px;
+  --console-space-5: 20px;
+  --console-space-6: 24px;
+  --console-space-7: 32px;
+  --console-content-pad: 26px;
+  --console-content-max: 1200px;
+  --console-page-pad-top: 16px;
+  --console-page-pad-top-compact: 13px;
+  --console-page-pad-bottom: 28px;
+  --console-section-gap: 28px;
+  --console-popup-shadow: 0 6px 18px rgb(29 33 41 / 12%);
+  --console-motion: 160ms;
+  --console-font-size: 14px;
+  --console-line-height: 22px;
+  /* font-family 按 global.less 源码顺序逐项保留，不调换、不增删 */
+  --console-font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Noto Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+
+  /* 旧变量名仅做映射，不新增颜色体系 */
+  --c-text: var(--color-text-1);
+  --c-sub: var(--color-text-2);
+  --c-line: var(--color-border-2);
+  --c-primary: var(--primary-6);
+  --c-bg: var(--color-bg-1);
+  --c-weak: var(--primary-1);
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+body {
+  font-family: var(--console-font-family);
+  color: var(--color-text-1);
+  background: var(--color-bg-1);
+  font-size: var(--console-font-size);
+  line-height: var(--console-line-height);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  color: var(--color-text-1);
+}
+h1 {
+  font-size: 20px;
+  line-height: 28px;
+}
+h2 {
+  font-size: 16px;
+  line-height: 24px;
+}
+h3 {
+  font-size: 14px;
+  line-height: 22px;
+}
+a {
+  color: var(--primary-6);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--primary-5);
+}
+code,
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+}
+
+/* ---------------------------------------------------------------- 页面骨架 */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--console-section-gap);
+  max-width: var(--console-content-max);
+}
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--console-space-3);
+  flex-wrap: wrap;
+}
+.page-head .sub,
+.sub {
+  color: var(--color-text-2);
+  font-size: 13px;
+  margin: 0;
+}
+.hint {
+  color: var(--color-text-2);
+  font-size: 13px;
+}
+.grow {
+  flex: 1;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--console-space-2);
+  flex-wrap: wrap;
+}
+.grid {
+  display: grid;
+  gap: var(--console-space-4);
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+
+/* ------------------------------------------------------------ 面板 / 卡片 */
+.panel,
+.card {
+  background: var(--color-bg-2);
+  border: 1px solid var(--color-neutral-3);
+  border-radius: var(--console-radius-panel);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--console-space-3);
+  /* 宽表在面板内横向滚动，不把整页撑出横向滚动条 */
+  overflow-x: auto;
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--console-space-2);
+  flex-wrap: wrap;
+}
+
+/* -------------------------------------------------------------------- 按钮 */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--console-control-h);
+  border: 1px solid var(--color-border-2);
+  background: var(--color-bg-1);
+  color: var(--color-text-1);
+  border-radius: var(--console-radius-control);
+  padding: 0 15px;
+  font: inherit;
+  font-size: var(--console-font-size);
+  cursor: pointer;
+  text-decoration: none;
+  transition: background var(--console-motion);
+  white-space: nowrap;
+}
+.btn:hover:not(:disabled) {
+  background: var(--color-fill-2);
+}
+.btn.primary {
+  background: var(--primary-6);
+  border-color: var(--primary-6);
+  color: #fff;
+}
+.btn.primary:hover:not(:disabled) {
+  background: var(--primary-5);
+}
+.btn.danger {
+  background: var(--color-bg-1);
+  border-color: var(--danger-6);
+  color: var(--danger-6);
+}
+.btn.danger:hover:not(:disabled) {
+  background: var(--danger-1);
+}
+.btn.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--primary-6);
+}
+.btn.ghost:hover:not(:disabled) {
+  background: var(--primary-1);
+}
+.btn.big {
+  /* 登录页主按钮：沿用 Arco large 高度 36px（基准只有 34/36 两档） */
+  height: var(--console-form-h);
+  padding: 0 20px;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* -------------------------------------------------------------- 表单控件 */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--console-space-1);
+  font-size: 13px;
+  color: var(--color-text-2);
+}
+.field > span {
+  font-weight: 500;
+}
+input[type='text'],
+input[type='number'],
+input[type='search'],
+input[type='password'],
+select,
+textarea {
+  height: var(--console-form-h);
+  border: 1px solid var(--color-border-2);
+  border-radius: var(--console-radius-control);
+  padding: 0 11px;
+  font: inherit;
+  font-size: var(--console-font-size);
+  background: var(--color-bg-1);
+  color: var(--color-text-1);
+}
+textarea {
+  height: auto;
+  min-height: 58px;
+  padding: 6px 11px;
+  resize: vertical;
+}
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--primary-6);
+  box-shadow: 0 0 0 2px rgb(22 93 255 / 12%);
+}
+input:disabled,
+select:disabled,
+textarea:disabled {
+  background: var(--color-fill-2);
+  color: var(--color-text-4);
+  cursor: not-allowed;
+}
+
+/* -------------------------------------------------------------------- 表格 */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--console-font-size);
+  color: var(--color-text-1);
+}
+th {
+  height: var(--console-table-head-h);
+  padding: 0 var(--console-space-3);
+  background: var(--color-bg-3);
+  color: var(--color-text-2);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--color-neutral-3);
+  text-align: left;
+}
+td {
+  height: var(--console-row-h);
+  padding: 0 var(--console-space-3);
+  border-bottom: 1px solid var(--color-border-1);
+  vertical-align: middle;
+  text-align: left;
+}
+table.compact td {
+  height: var(--console-row-compact-h);
+}
+tbody tr:last-child td {
+  border-bottom: none;
+}
+tbody tr:hover td {
+  background: var(--color-fill-1);
+}
+td.num,
+th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --------------------------------------------------------- 列表页（ListShell） */
+.list-shell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--playdayy-size-3);
+  container-type: inline-size;
+  min-width: 0;
+}
+.list-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--playdayy-size-3);
+}
+.toolbar-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--playdayy-size-2);
+  flex-wrap: wrap;
+}
+.toolbar-filters {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: var(--playdayy-size-2);
+  margin-left: auto;
+  white-space: nowrap;
+}
+.toolbar-filters > * {
+  flex: 0 0 auto;
+}
+.toolbar-filters input[type='search'],
+.toolbar-filters input[type='text'] {
+  width: 220px;
+}
+.list-panel {
+  background: var(--color-bg-2);
+  border: 1px solid var(--color-neutral-3);
+  /* 源码 ListShell：列表面板用 --border-radius-small，不强改 12px */
+  border-radius: var(--border-radius-small);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.list-content {
+  overflow: auto;
+  min-width: 0;
+}
+.list-content table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--console-space-3);
+  min-height: var(--console-pagination-h);
+  padding: 0 var(--playdayy-size-4);
+  border-top: 1px solid var(--color-neutral-3);
+  flex-wrap: wrap;
+  font-size: var(--console-font-size);
+  color: var(--color-text-2);
+}
+/* 源码 .arco-pagination-total{margin-right:auto}：总数在左、控件在右 */
+.pager-total {
+  margin-right: auto;
+  white-space: nowrap;
+}
+.pager-ctrl {
+  display: flex;
+  align-items: center;
+  gap: var(--console-space-2);
+  flex-wrap: wrap;
+  /* 窄容器里分页区自行换行时，控件仍贴右（源码 ListShell 是总数在左、控件在右） */
+  margin-left: auto;
+}
+.pager-size {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--console-space-1);
+  white-space: nowrap;
+}
+.pager-size select {
+  height: var(--console-control-h);
+  font-size: 13px;
+  padding: 0 6px;
+}
+.pager-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--console-space-1);
+  white-space: nowrap;
+}
+.pager-jump .jump {
+  width: 52px;
+  height: var(--console-control-h);
+  text-align: center;
+  padding: 0 6px;
+}
+.pagegap {
+  min-width: 20px;
+  text-align: center;
+  color: var(--color-text-3);
+  user-select: none;
+}
+.pagebtn {
+  min-width: 34px;
+  height: var(--console-control-h);  padding: 0 8px;
+  border: 1px solid var(--color-neutral-3);
+  border-radius: var(--console-radius-control);
+  background: var(--color-bg-1);
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.pagebtn:hover:not(:disabled) {
+  background: var(--color-fill-2);
+}
+.pagebtn.on {
+  background: var(--primary-6);
+  border-color: var(--primary-6);
+  color: #fff;
+}
+.pagebtn:disabled {
+  color: var(--color-text-4);
+  cursor: not-allowed;
+  background: var(--color-bg-1);
+}
+.empty {
+  padding: var(--console-space-7) var(--console-space-4);
+  text-align: center;
+  color: var(--color-text-3);
+  font-size: var(--console-font-size);
+}
+.empty .empty-next {
+  color: var(--color-text-2);
+  font-size: 13px;
+  margin-top: var(--console-space-1);
+}
+@container (max-width: 700px) {
+  .pager-jump,
+  .pager-jump .jump {
+    display: none;
+  }
+  .pagination-bar {
+    gap: var(--console-space-2);
+  }
+  .pager-ctrl {
+    gap: var(--console-space-1);
+  }
+  .pagebtn {
+    min-width: 30px;
+    padding: 0 6px;
+  }
+  .pager-size .hint {
+    display: none;
+  }
+}
+@container (max-width: 520px) {
+  .toolbar-filters {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .toolbar-filters input[type='search'],
+  .toolbar-filters input[type='text'] {
+    width: 180px;
+  }
+}
+
+/* ------------------------------------------------------- 标签 / 提示条 */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: var(--border-radius-medium);
+  padding: 1px 8px;
+  font-size: 12px;
+  line-height: 20px;
+  border: 1px solid transparent;
+  background: var(--color-fill-2);
+  color: var(--color-text-2);
+  white-space: nowrap;
+}
+.badge.ok {
+  background: var(--success-1);
+  color: var(--success-6);
+}
+.badge.warn {
+  background: var(--warning-1);
+  color: var(--warning-6);
+}
+.badge.bad {
+  background: var(--danger-1);
+  color: var(--danger-6);
+}
+.badge.info {
+  background: var(--primary-1);
+  color: var(--primary-7);
+}
+.badge.purple {
+  background: var(--purple-1);
+  color: var(--purple-6);
+}
+.warnbox,
+.infobox,
+.okbox {
+  border-radius: var(--console-radius-control);
+  padding: var(--playdayy-size-2) var(--playdayy-size-3);
+  font-size: 13px;
+  border: 1px solid transparent;
+}
+.warnbox {
+  border-color: var(--warning-6);
+  background: var(--warning-1);
+  color: var(--color-text-1);
+}
+.infobox {
+  border-color: var(--primary-5);
+  background: var(--primary-1);
+  color: var(--color-text-1);
+}
+.okbox {
+  border-color: var(--success-6);
+  background: var(--success-1);
+  color: var(--color-text-1);
+}
+
+/* --------------------------------------------------------- 选项卡 / 键值 */
+.tabs {
+  display: flex;
+  gap: var(--console-space-1);
+  border-bottom: 1px solid var(--color-neutral-3);
+  flex-wrap: wrap;
+}
+.tabs a,
+.tabs button {
+  border: none;
+  background: transparent;
+  height: var(--console-control-h);
+  padding: 0 12px;
+  font: inherit;
+  font-size: var(--console-font-size);
+  color: var(--color-text-2);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+.tabs a:hover,
+.tabs button:hover {
+  color: var(--primary-6);
+}
+.tabs a.active,
+.tabs button.active {
+  color: var(--primary-6);
+  border-bottom-color: var(--primary-6);
+  font-weight: 600;
+}
+.kv {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: var(--console-space-2) var(--console-space-3);
+  font-size: 13px;
+  margin: 0;
+}
+.kv dt {
+  color: var(--color-text-2);
+}
+.kv dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.checkbox {
+  display: flex;
+  gap: var(--console-space-2);
+  align-items: flex-start;
+  font-size: 13px;
+}
+.center-note {
+  padding: 40px;
+  text-align: center;
+  color: var(--color-text-2);
+}
+.divider {
+  height: 1px;
+  background: var(--color-neutral-3);
+  border: 0;
+}
