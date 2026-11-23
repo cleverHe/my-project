@@ -19,10 +19,12 @@ const router = useRouter()
 const session = useSession()
 const ui = useUi()
 const items = ref<ProjectCard[]>([])
-const listTotal = ref(0)
-const listHasNext = ref(false)
 const error = ref<unknown>(null)
 const loading = ref(false)
+/** 已取回的卡片数（逐批加载时给用户真实进度，不是假动画） */
+const progress = ref(0)
+/** 取回数量与服务端 total 不一致，或分页中途失败时的如实说明（不再把残缺列表当完整） */
+const incomplete = ref<string | null>(null)
 const showDeleted = ref(false)
 const expanded = ref<Record<string, boolean>>({})
 const now = new Date('2026-11-20T09:20:00.000Z')
@@ -37,18 +39,54 @@ function explainDenied() {
   }
 }
 
+/** 列表接口单次响应上限（api-spec §1.4 白名单）；它是「每页最多多少」，不是用户项目总数上限 */
+const PAGE_SIZE = 200
+
+/**
+ * 项目列表按服务端分页逐批取回（VIS-13）。
+ *
+ * 服务端 page_size=200 只是单次响应上限：超过 200 个项目时，旧的「只取第 1 页 + 提示去搜索」
+ * 会让第 201 个及之后的项目在 Dashboard 上不可达（页面既没有搜索，也没有翻页）。
+ * 这里按 page/has_next 依次取回剩余分页，合成完整集合后一次性渲染；
+ * 任何一页失败都保留已取回部分并明确报错，不把残缺列表当成加载完成。
+ */
 async function load() {
   loading.value = true
   error.value = null
+  incomplete.value = null
+  progress.value = 0
+  const collected: ProjectCard[] = []
+  const seen = new Set<string>()
+  let total = 0
   try {
-    // 列表接口按 api-spec §1.4 服务端分页（DEF-V01）；Dashboard 没有分页控件，
-    // 显式取上限 200 并如实提示还有更多，避免「第 21 个项目静默消失」
-    const res = await api.projects({ page_size: 200, ...(showDeleted.value ? { status: 'soft_deleted' } : {}) })
-    items.value = res.data.items
-    listTotal.value = res.data.total
-    listHasNext.value = res.data.has_next
+    for (let page = 1; ; page += 1) {
+      const res = await api.projects({
+        page,
+        page_size: PAGE_SIZE,
+        ...(showDeleted.value ? { status: 'soft_deleted' } : {}),
+      })
+      total = res.data.total
+      for (const item of res.data.items) {
+        // 同一次加载内按 id 去重：分页期间数据变化时不重复渲染同一张卡片
+        if (seen.has(item.id)) continue
+        seen.add(item.id)
+        collected.push(item)
+      }
+      progress.value = collected.length
+      if (!res.data.has_next || res.data.items.length === 0) break
+      // 兜底：服务端 has_next 异常为真时不在本页死循环（按 total 推算出应有页数）
+      if (page > Math.ceil(Math.max(total, collected.length) / PAGE_SIZE)) break
+    }
+    items.value = collected
+    if (collected.length !== total) {
+      incomplete.value = `服务端共 ${total} 个项目，本次取回 ${collected.length} 个（加载期间列表有变化），请刷新重试。`
+    }
   } catch (e) {
     error.value = e
+    items.value = collected
+    if (collected.length) {
+      incomplete.value = `分页加载中断：已取回 ${collected.length} 个${total ? ` / 共 ${total} 个` : ''}，其余项目未显示。请重试。`
+    }
   } finally {
     loading.value = false
   }
@@ -100,15 +138,15 @@ const who = computed(() => session.state.me?.display_name ?? '')
 
     <ErrorNotice v-if="error" :error="error" />
 
-    <div v-if="loading" class="center-note">加载中…</div>
-    <div v-else-if="items.length === 0" class="panel center-note">
-      <p>还没有项目。</p>
-      <p class="hint">创建项目后会得到仓库、规范与 4 个门户 Skill；模板不可用时可回退空白模板，不会建空仓库。</p>
+    <div v-if="loading" class="center-note">
+      加载中…<template v-if="progress > 0">（已取回 {{ progress }} 个项目）</template>
+    </div>
+    <div v-else-if="!error && items.length === 0" class="panel center-note">
+      <p>{{ showDeleted ? '没有已删除的项目。' : '还没有项目。' }}</p>
+      <p v-if="!showDeleted" class="hint">创建项目后会得到仓库、规范与 4 个门户 Skill；模板不可用时可回退空白模板，不会建空仓库。</p>
     </div>
 
-    <p v-if="!loading && listHasNext" class="warnbox">
-      共 {{ listTotal }} 个项目，本页最多显示 200 个。超过上限请用搜索或联系系统管理员查看其余项目（不会静默隐藏）。
-    </p>
+    <p v-if="!loading && incomplete" class="warnbox">{{ incomplete }}</p>
     <div v-if="!loading && items.length" class="grid">
       <article v-for="p in items" :key="p.id" class="pcard">
         <header>

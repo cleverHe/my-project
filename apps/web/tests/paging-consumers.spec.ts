@@ -8,12 +8,15 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import { nextTick } from 'vue'
 import { api } from '@/api/client'
-import { authContext } from '@/api/http'
+import { ApiError, authContext } from '@/api/http'
+import type { ProjectCard } from '@/api/types'
 import { useServerPagedList, type ServerPage } from '@/composables/useServerPagedList'
 import AuditPage from '@/pages/AuditPage.vue'
 import AdminPeoplePage from '@/pages/AdminPeoplePage.vue'
+import DashboardPage from '@/pages/DashboardPage.vue'
 import ListShell from '@/components/ListShell.vue'
 
 authContext.userId = 'usr_trial_zhou'
@@ -193,5 +196,131 @@ describe('ListShell 分页区（总数在左、控件在右、页码有窗口）
     expect(empty.find('.pager-total').text()).toBe('共 0 条')
     expect(empty.findAll('.pagebtn').map((b) => b.text())).toEqual(['上一页', '1', '下一页'])
     empty.unmount()
+  })
+})
+
+describe('Dashboard：项目超过单次响应上限（200）仍完整可达（VIS-13）', () => {
+  function card(id: string, name: string, status: 'active' | 'soft_deleted' = 'active'): ProjectCard {
+    return {
+      id,
+      name,
+      slug: id,
+      status,
+      owner: { user_id: 'usr_trial_lin', display_name: '林小满' },
+      relation: 'owner',
+      preview: { slot: 'recent', total: 0, limit: 3, items: [] },
+      production: { state: 'not_created', url: null, sha: null, version_label: null, updated_at: null },
+      quota: { used_bytes: 0, limit_bytes: 4 * 1024 ** 3, ratio: 0, warning: false },
+      spec: { cpu: 0.5, memory_mb: 256, disk_bytes: 4 * 1024 ** 3, preview_limit: 3 },
+      updated_at: '2026-11-20T08:40:00.000Z',
+    }
+  }
+
+  /** 服务端替身：与 BFF 同契约（page/page_size 白名单、total 与 items 同源、has_next） */
+  function fakeServer(opts: { active: number; deleted: number; failPage?: number }) {
+    const active = Array.from({ length: opts.active }, (_, i) => card(`prj_bulk_${i + 1}`, `批量项目 ${String(i + 1).padStart(3, '0')}`))
+    const deleted = Array.from({ length: opts.deleted }, (_, i) => card(`prj_del_${i + 1}`, `已删除项目 ${String(i + 1).padStart(3, '0')}`, 'soft_deleted'))
+    const calls: { page: number; page_size: number; status?: string }[] = []
+    const spy = vi.spyOn(api, 'projects').mockImplementation(async (q = {}) => {
+      const page = Number(q.page ?? 1)
+      const page_size = Number(q.page_size ?? 20)
+      const status = q.status === undefined ? undefined : String(q.status)
+      calls.push({ page, page_size, status })
+      if (opts.failPage && page === opts.failPage) {
+        throw new ApiError({ errorCode: 'server.unavailable', message: '服务暂时不可用。', nextStep: '稍后重试。', traceId: 'trc_test' }, 503)
+      }
+      const rows = status === 'soft_deleted' ? deleted : active
+      const start = (page - 1) * page_size
+      const items = rows.slice(start, start + page_size)
+      return {
+        data: { items, total: rows.length, page, page_size, has_next: start + page_size < rows.length },
+        traceId: 'trc_test',
+        mock: false,
+        status: 200,
+      }
+    })
+    return { calls, spy, active, deleted }
+  }
+
+  async function mountDashboard() {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/dashboard', component: { template: '<div />' } },
+        { path: '/projects/:id/deploy', component: { template: '<div />' } },
+        { path: '/wizard', component: { template: '<div />' } },
+      ],
+    })
+    await router.push('/dashboard')
+    await router.isReady()
+    return mount(DashboardPage, { global: { plugins: [router] } })
+  }
+
+  it('212 个项目逐页取回：全部渲染、无重复无遗漏，第 201 个及之后的卡片可达；已删除列表同样完整', async () => {
+    const { calls, spy, active, deleted } = fakeServer({ active: 212, deleted: 205 })
+    try {
+      const w = await mountDashboard()
+      await vi.waitFor(() => expect(w.findAll('.pcard')).toHaveLength(212))
+
+      // 请求序列：page_size 固定 200，按 page 依次取，直到 has_next=false
+      expect(calls.filter((c) => c.status === undefined)).toEqual([
+        { page: 1, page_size: 200, status: undefined },
+        { page: 2, page_size: 200, status: undefined },
+      ])
+      // 无重复、无遗漏：卡片标题两两不同，且等于服务端 212 条
+      const titles = w.findAll('.pcard .title a').map((a) => a.text())
+      expect(new Set(titles).size).toBe(212)
+      expect(titles).toEqual(active.map((p) => p.name))
+      // 第 201 条之后的项目确实出现在页面上，并且仍指向详情路由
+      expect(titles).toContain(active[200]!.name)
+      expect(titles).toContain(active[211]!.name)
+      const lastLink = w.findAll('.pcard .title a').at(-1)!
+      expect(lastLink.attributes('href')).toContain(`/projects/${active[211]!.id}/deploy`)
+      // 不再出现「本页最多显示 200 个，请用搜索」的不可达提示
+      expect(w.find('.warnbox').exists()).toBe(false)
+
+      // 已删除列表：同样逐页取回，不得只显示前 200 条
+      await w.findAll('button').find((b) => b.text().includes('已删除项目'))!.trigger('click')
+      await vi.waitFor(() => expect(w.findAll('.pcard')).toHaveLength(205))
+      expect(calls.filter((c) => c.status === 'soft_deleted')).toEqual([
+        { page: 1, page_size: 200, status: 'soft_deleted' },
+        { page: 2, page_size: 200, status: 'soft_deleted' },
+      ])
+      expect(w.findAll('.pcard .title a').map((a) => a.text())).toEqual(deleted.map((p) => p.name))
+      w.unmount()
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('次页失败：保留已取回部分并明确报错，不把 200 条当加载完成', async () => {
+    const { spy } = fakeServer({ active: 212, deleted: 0, failPage: 2 })
+    try {
+      const w = await mountDashboard()
+      await vi.waitFor(() => expect(w.find('.warnbox').exists()).toBe(true))
+      expect(w.find('.warnbox').text()).toContain('分页加载中断')
+      expect(w.find('.warnbox').text()).toContain('已取回 200 个 / 共 212 个')
+      expect(w.find('[role="alert"]').exists()).toBe(true)
+      expect(w.findAll('.pcard')).toHaveLength(200)
+      // 有错误时不能显示「还没有项目」，也不能显示「加载完成」的假成功
+      expect(w.text()).not.toContain('还没有项目')
+      w.unmount()
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('空数据：显示空态且不带告警（0 条不是加载失败）', async () => {
+    const { spy } = fakeServer({ active: 0, deleted: 0 })
+    try {
+      const w = await mountDashboard()
+      await vi.waitFor(() => expect(w.text()).toContain('还没有项目'))
+      expect(w.find('.warnbox').exists()).toBe(false)
+      expect(w.find('[role="alert"]').exists()).toBe(false)
+      expect(w.findAll('.pcard')).toHaveLength(0)
+      w.unmount()
+    } finally {
+      spy.mockRestore()
+    }
   })
 })
