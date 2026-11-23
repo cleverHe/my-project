@@ -425,6 +425,8 @@ th.num {
   align-items: center;
   gap: var(--console-space-2);
   flex-wrap: wrap;
+  /* 窄容器里分页区自行换行时，控件仍贴右（源码 ListShell 是总数在左、控件在右） */
+  margin-left: auto;
 }
 .pager-size {
   display: inline-flex;
@@ -449,10 +451,15 @@ th.num {
   text-align: center;
   padding: 0 6px;
 }
+.pagegap {
+  min-width: 20px;
+  text-align: center;
+  color: var(--color-text-3);
+  user-select: none;
+}
 .pagebtn {
   min-width: 34px;
-  height: var(--console-control-h);
-  padding: 0 8px;
+  height: var(--console-control-h);  padding: 0 8px;
   border: 1px solid var(--color-neutral-3);
   border-radius: var(--console-radius-control);
   background: var(--color-bg-1);
@@ -495,6 +502,13 @@ th.num {
   }
   .pager-ctrl {
     gap: var(--console-space-1);
+  }
+  .pagebtn {
+    min-width: 30px;
+    padding: 0 6px;
+  }
+  .pager-size .hint {
+    display: none;
   }
 }
 @container (max-width: 520px) {

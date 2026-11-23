@@ -23,6 +23,27 @@ const emit = defineEmits<{ (e: 'update:page', value: number): void; (e: 'update:
 const pages = computed(() => Math.max(1, Math.ceil(props.total / props.size)))
 const current = computed(() => Math.min(Math.max(1, props.page), pages.value))
 
+/**
+ * 页码窗口：页数多时只展示「首 + 当前附近 3 个 + 尾」，中间用省略号。
+ * 为什么不用全量页码：206 条 / 每页 10 会有 21 个页码按钮，控件换行把分页区撑成两行，
+ * 总数会被挤到上一行（配置平台 ListShell 是「总数在左、控件在右」同一行）。
+ */
+const PAGE_WINDOW = 3
+type PageCell = number | 'gap-l' | 'gap-r'
+const pageItems = computed<PageCell[]>(() => {
+  const last = pages.value
+  const cur = current.value
+  if (last <= PAGE_WINDOW * 2 + 3) return Array.from({ length: last }, (_, i) => i + 1)
+  const cells: PageCell[] = [1]
+  const start = Math.max(2, cur - PAGE_WINDOW)
+  const end = Math.min(last - 1, cur + PAGE_WINDOW)
+  if (start > 2) cells.push('gap-l')
+  for (let p = start; p <= end; p += 1) cells.push(p)
+  if (end < last - 1) cells.push('gap-r')
+  cells.push(last)
+  return cells
+})
+
 function go(next: number) {
   const target = Math.min(Math.max(1, next), pages.value)
   if (target !== props.page) emit('update:page', target)
@@ -58,17 +79,19 @@ function onJump(e: KeyboardEvent) {
             <span class="hint">{{ unit }}</span>
           </label>
           <button type="button" class="pagebtn" :disabled="current <= 1" @click="go(current - 1)">上一页</button>
-          <button
-            v-for="p in pages"
-            :key="p"
-            type="button"
-            class="pagebtn"
-            :class="{ on: p === current }"
-            :aria-current="p === current ? 'page' : undefined"
-            @click="go(p)"
-          >
-            {{ p }}
-          </button>
+          <template v-for="cell in pageItems" :key="String(cell)">
+            <span v-if="cell === 'gap-l' || cell === 'gap-r'" class="pagegap" aria-hidden="true">…</span>
+            <button
+              v-else
+              type="button"
+              class="pagebtn"
+              :class="{ on: cell === current }"
+              :aria-current="cell === current ? 'page' : undefined"
+              @click="go(cell as number)"
+            >
+              {{ cell }}
+            </button>
+          </template>
           <button type="button" class="pagebtn" :disabled="current >= pages" @click="go(current + 1)">下一页</button>
           <span v-if="jump" class="pager-jump">
             <span class="hint">跳至</span>

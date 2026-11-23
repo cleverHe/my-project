@@ -14,6 +14,7 @@ import { authContext } from '@/api/http'
 import { useServerPagedList, type ServerPage } from '@/composables/useServerPagedList'
 import AuditPage from '@/pages/AuditPage.vue'
 import AdminPeoplePage from '@/pages/AdminPeoplePage.vue'
+import ListShell from '@/components/ListShell.vue'
 
 authContext.userId = 'usr_trial_zhou'
 authContext.csrfToken = 'csrf_test'
@@ -166,5 +167,31 @@ describe('页面消费方（真实组件 + Mock 同名契约）', () => {
     await vi.waitFor(() => expect(w.text()).toContain('没有找到该账号'))
     expect(w.text()).toContain('共 0 条')
     w.unmount()
+  })
+})
+
+describe('ListShell 分页区（总数在左、控件在右、页码有窗口）', () => {
+  it('页数很多时页码不铺满：保留首页/尾页/当前附近，中间用省略号', () => {
+    const w = mount(ListShell, { props: { total: 206, page: 1, size: 10 }, slots: { default: '<div>rows</div>' } })
+    const labels = w.findAll('.pagebtn').map((b) => b.text())
+    // 上一页 + 窗口页码 + 下一页
+    expect(labels[0]).toBe('上一页')
+    expect(labels).toContain('1')
+    expect(labels).toContain('21')
+    expect(labels.filter((t) => /^\d+$/.test(t)).length).toBeLessThanOrEqual(9)
+    expect(w.findAll('.pagegap').length).toBeGreaterThan(0)
+    w.unmount()
+  })
+
+  it('页码少（≤9 页）时全部展示，不出现省略号；空列表保留第 1 页与共 0 条', () => {
+    const many = mount(ListShell, { props: { total: 50, page: 2, size: 10 }, slots: { default: '<div>rows</div>' } })
+    expect(many.findAll('.pagegap')).toHaveLength(0)
+    expect(many.findAll('.pagebtn').map((b) => b.text())).toEqual(['上一页', '1', '2', '3', '4', '5', '下一页'])
+    many.unmount()
+
+    const empty = mount(ListShell, { props: { total: 0, page: 1, size: 10 }, slots: { default: '<div class="empty">没有数据</div>' } })
+    expect(empty.find('.pager-total').text()).toBe('共 0 条')
+    expect(empty.findAll('.pagebtn').map((b) => b.text())).toEqual(['上一页', '1', '下一页'])
+    empty.unmount()
   })
 })
