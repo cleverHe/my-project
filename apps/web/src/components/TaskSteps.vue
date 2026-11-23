@@ -28,60 +28,61 @@ const currentIndex = computed(() => (props.task.phase ? stages.value.indexOf(pro
 <style scoped>
 .rail {
   display: flex;
-  gap: 8px;
-  list-style: none;
+  flex-direction: column;
+  gap: var(--playdayy-size-2);
+  margin: 0;
   padding: 0;
-  margin: 0 0 8px;
-  flex-wrap: wrap;
+  list-style: none;
 }
 .rail li {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid #e5e7eb;
-  font-size: 12px;
-  color: #6b7280;
-  background: #fff;
+  align-items: baseline;
+  gap: var(--playdayy-size-2);
+  border: 1px solid var(--color-neutral-3);
+  border-radius: var(--console-radius-control);
+  padding: var(--playdayy-size-2) var(--playdayy-size-3);
+  font-size: 13px;
+  color: var(--color-text-2);
+  background: var(--color-bg-2);
 }
-.idx {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #f3f4f6;
+.rail li .idx {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--color-fill-2);
+  color: var(--color-text-2);
+  font-size: 12px;
 }
 .rail li.now {
-  border-color: #1d4ed8;
-  color: #1d4ed8;
-  background: #eff6ff;
+  border-color: var(--primary-5);
+  color: var(--primary-7);
+  background: var(--primary-1);
 }
 .rail li.now .idx {
-  background: #1d4ed8;
+  background: var(--primary-6);
   color: #fff;
 }
 .rail li.done {
-  border-color: #b7e4c7;
-  color: #1a7f45;
+  border-color: var(--success-6);
+  color: var(--success-6);
 }
 .rail li.failed {
-  border-color: #fecaca;
-  background: #fef2f2;
-  color: #b91c1c;
+  border-color: var(--danger-6);
+  background: var(--danger-1);
+  color: var(--danger-6);
 }
 .rail li.failed .idx {
-  background: #dc2626;
+  background: var(--danger-6);
   color: #fff;
 }
 .meta {
   display: flex;
-  gap: 16px;
+  gap: var(--playdayy-size-4);
   font-size: 12px;
-  color: #6b7280;
+  color: var(--color-text-2);
   flex-wrap: wrap;
 }
 </style>

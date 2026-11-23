@@ -153,10 +153,10 @@ const who = computed(() => session.state.me?.display_name ?? '')
 
 <style scoped>
 .pcard {
-  background: #fff;
-  border: 1px solid var(--c-line);
-  border-radius: 12px;
-  padding: 12px;
+  background: var(--color-bg-2);
+  border: 1px solid var(--color-neutral-3);
+  border-radius: var(--console-radius-panel);
+  padding: var(--playdayy-size-3);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -179,8 +179,8 @@ header {
   color: var(--c-text);
 }
 .relation {
-  font-size: 11px;
-  color: var(--c-sub);
+  font-size: 12px;
+  color: var(--color-text-2);
 }
 .slots {
   display: grid;
@@ -218,23 +218,23 @@ header {
 }
 .bar {
   height: 6px;
-  background: #f0f1f3;
-  border-radius: 3px;
+  background: var(--color-fill-2);
+  border-radius: var(--border-radius-medium);
   overflow: hidden;
 }
 .bar i {
   display: block;
   height: 100%;
-  background: #22c55e;
+  background: var(--success-6);
 }
 .bar i.warn {
-  background: #f59e0b;
+  background: var(--warning-6);
 }
 .deleted {
-  font-size: 12px;
-  color: #6b7280;
-  background: #fafafa;
-  border-radius: 8px;
+  font-size: 13px;
+  color: var(--color-text-2);
+  background: var(--color-fill-1);
+  border-radius: var(--console-radius-control);
   padding: 10px;
 }
 </style>

@@ -60,7 +60,7 @@ function signOut() {
               <option value="sysadmin">系统管理员</option>
             </select>
           </label>
-          <button type="button" class="ghost" @click="signOut">退出</button>
+          <button type="button" class="btn ghost signout" @click="signOut">退出</button>
         </div>
       </aside>
       <main>
@@ -73,10 +73,12 @@ function signOut() {
             </select>
           </label>
         </header>
-        <RouterView />
+        <div class="content">
+          <RouterView />
+        </div>
       </main>
     </div>
-    <div class="toasts">
+    <div class="toasts" aria-live="polite">
       <div v-for="t in ui.state.toasts" :key="t.id" class="toast" :class="t.kind" role="status">
         <div class="t-title">{{ t.title }}</div>
         <ul v-if="t.lines.length">
@@ -94,6 +96,7 @@ function signOut() {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+  background: var(--color-bg-1);
 }
 .body {
   flex: 1;
@@ -101,34 +104,47 @@ function signOut() {
   min-height: 0;
 }
 aside {
-  width: 216px;
-  border-right: 1px solid #e5e7eb;
-  background: #fafafa;
+  width: var(--console-sider-w);
+  flex: 0 0 var(--console-sider-w);
+  border-right: 1px solid var(--color-border-2);
+  background: var(--color-bg-1);
   display: flex;
   flex-direction: column;
-  padding: 12px;
-  gap: 12px;
+  padding: 0 8px 24px;
+  gap: 4px;
 }
 .brand {
+  display: flex;
+  align-items: center;
+  height: var(--console-topbar-h);
+  padding: 0 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--color-border-2);
   font-weight: 700;
-  font-size: 14px;
-  letter-spacing: 0.02em;
+  font-size: 15px;
+  color: var(--color-text-1);
 }
 nav {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  padding-top: 8px;
 }
 nav a {
-  text-decoration: none;
-  color: #374151;
-  font-size: 13px;
-  padding: 6px 8px;
-  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  height: var(--console-control-h);
+  padding: 0 10px;
+  border-radius: var(--console-radius-control);
+  color: var(--color-text-1);
+  font-size: 14px;
+}
+nav a:hover {
+  background: var(--color-fill-2);
 }
 nav a.active {
-  background: #e8efff;
-  color: #1d4ed8;
+  background: var(--primary-1);
+  color: var(--primary-7);
   font-weight: 600;
 }
 .who {
@@ -136,83 +152,108 @@ nav a.active {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  font-size: 12px;
-  color: #6b7280;
+  padding: 12px 10px 0;
+  border-top: 1px solid var(--color-border-2);
+  font-size: 13px;
+  color: var(--color-text-2);
 }
 .name {
-  color: #111827;
+  color: var(--color-text-1);
   font-weight: 600;
 }
 .switch {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  font-size: 13px;
+  color: var(--color-text-2);
 }
-select {
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  padding: 4px 6px;
-  font-size: 12px;
-  background: #fff;
+.switch select {
+  width: 100%;
 }
-.ghost {
-  border: 1px solid #d1d5db;
-  background: #fff;
-  border-radius: 6px;
-  padding: 4px 8px;
-  font-size: 12px;
-  cursor: pointer;
+.signout {
+  align-self: flex-start;
 }
 main {
   flex: 1;
   min-width: 0;
-  padding: 14px 18px 40px;
+  display: flex;
+  flex-direction: column;
 }
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 12px;
+  gap: 16px;
+  height: var(--console-topbar-h);
+  padding: 0 var(--console-content-pad);
+  border-bottom: 1px solid var(--color-border-2);
+  background: var(--color-bg-1);
+  position: sticky;
+  top: 0;
+  z-index: 20;
 }
 .crumb {
   font-size: 13px;
-  color: #6b7280;
+  color: var(--color-text-2);
 }
 .scenario {
-  font-size: 12px;
-  color: #6b7280;
   display: flex;
   align-items: center;
   gap: 6px;
+  font-size: 13px;
+  color: var(--color-text-2);
+}
+.scenario select {
+  height: 28px;
+  font-size: 12px;
+  padding: 0 8px;
+}
+/* 内容页：左右 26、上 16、下 28、最大宽 1200（--console-*） */
+.content {
+  padding: var(--console-page-pad-top) var(--console-content-pad) var(--console-page-pad-bottom);
+  max-width: var(--console-content-max);
+  width: 100%;
 }
 .toasts {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
+  left: 0;
+  top: 0;
+  /* 100vw/100dvh 覆盖滚动条占位，保证按真实窗口中心对齐（inset:0 只到布局视口） */
+  width: 100vw;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  gap: var(--console-space-2);
   z-index: 60;
-  max-width: 380px;
+  pointer-events: none;
+  padding: 16px;
 }
 .toast {
-  border-radius: 8px;
-  padding: 10px 12px;
-  font-size: 12px;
-  border: 1px solid #d1d5db;
-  background: #fff;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+  pointer-events: auto;
+  min-width: 240px;
+  max-width: 420px;
+  border-radius: var(--console-radius-control);
+  padding: 12px 16px;
+  font-size: 14px;
+  border: 1px solid var(--color-border-2);
+  background: var(--color-bg-2);
+  color: var(--color-text-1);
+  box-shadow: var(--console-popup-shadow);
 }
 .toast.success {
-  border-color: #b7e4c7;
+  border-color: var(--success-6);
+  background: var(--success-1);
 }
 .toast.error {
-  border-color: #fecaca;
-  background: #fff7f7;
+  border-color: var(--danger-6);
+  background: var(--danger-1);
 }
 .toast.warn {
-  border-color: #ffd8a8;
-  background: #fffbf5;
+  border-color: var(--warning-6);
+  background: var(--warning-1);
 }
 .t-title {
   font-weight: 600;
@@ -221,21 +262,22 @@ main {
 .toast ul {
   margin: 0;
   padding-left: 16px;
-  color: #4b5563;
+  color: var(--color-text-1);
+  font-size: 13px;
 }
 .toast button {
   margin-top: 6px;
   border: none;
   background: transparent;
-  color: #1d4ed8;
+  color: var(--primary-6);
   cursor: pointer;
   font-size: 12px;
   padding: 0;
 }
 .foot {
-  border-top: 1px solid #e5e7eb;
+  border-top: 1px solid var(--color-border-2);
   padding: 6px 16px;
-  font-size: 11px;
-  color: #9ca3af;
+  font-size: 12px;
+  color: var(--color-text-3);
 }
 </style>

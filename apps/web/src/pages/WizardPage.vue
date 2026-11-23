@@ -215,7 +215,7 @@ onMounted(loadTemplates)
 }
 .tpl {
   border: 1px solid var(--c-line);
-  border-radius: 8px;
+  border-radius: var(--console-radius-panel);
   padding: 10px;
   display: flex;
   gap: 8px;

@@ -98,7 +98,7 @@ onMounted(load)
 <style scoped>
 .log {
   background: #0f172a;
-  border-radius: 8px;
+  border-radius: var(--console-radius-control);
   padding: 8px 10px;
   font-size: 12px;
   color: #e2e8f0;

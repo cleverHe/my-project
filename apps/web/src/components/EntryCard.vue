@@ -31,43 +31,44 @@ const emit = defineEmits<{ (e: 'action', key: EntrySlotView['primaryAction']['ke
 
 <style scoped>
 .card {
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  padding: 12px;
-  background: #fff;
+  border: 1px solid var(--color-neutral-3);
+  border-radius: var(--console-radius-panel);
+  padding: var(--playdayy-size-3);
+  background: var(--color-bg-2);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--playdayy-size-2);
   min-width: 0;
 }
 header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--playdayy-size-2);
 }
 .kind {
   font-weight: 600;
-  font-size: 13px;
-  color: #374151;
+  font-size: 14px;
+  color: var(--color-text-1);
 }
 dl {
   margin: 0;
   display: flex;
-  gap: 16px;
+  gap: var(--playdayy-size-4);
   flex-wrap: wrap;
 }
 .meta {
   display: flex;
-  gap: 4px;
-  font-size: 12px;
-  color: #6b7280;
+  gap: var(--playdayy-size-1);
+  font-size: 13px;
+  color: var(--color-text-2);
 }
 dt,
 dd {
   margin: 0;
 }
 dd {
-  color: #111827;
+  color: var(--color-text-1);
   max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -75,31 +76,34 @@ dd {
 }
 .hint {
   margin: 0;
-  font-size: 12px;
-  color: #92400e;
-  background: #fffbeb;
-  border-radius: 6px;
-  padding: 4px 8px;
+  font-size: 13px;
+  color: var(--color-text-1);
+  background: var(--warning-1);
+  border: 1px solid var(--warning-6);
+  border-radius: var(--console-radius-control);
+  padding: var(--playdayy-size-1) var(--playdayy-size-2);
 }
 .actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--playdayy-size-2);
   margin-top: auto;
 }
 .link {
-  font-size: 12px;
-  color: #1d4ed8;
+  font-size: 13px;
+  color: var(--primary-6);
   text-decoration: none;
 }
 .primary {
   margin-left: auto;
-  border: 1px solid #1d4ed8;
-  background: #1d4ed8;
+  border: 1px solid var(--primary-6);
+  background: var(--primary-6);
   color: #fff;
-  border-radius: 6px;
-  padding: 4px 10px;
-  font-size: 12px;
+  border-radius: var(--console-radius-control);
+  height: var(--console-control-h);
+  padding: 0 12px;
+  font: inherit;
+  font-size: 13px;
   cursor: pointer;
 }
 </style>

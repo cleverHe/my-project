@@ -120,8 +120,8 @@ onMounted(load)
   gap: 10px;
 }
 .mini {
-  border: 1px solid var(--c-line);
-  border-radius: 8px;
+  border: 1px solid var(--color-neutral-3);
+  border-radius: var(--console-radius-control);
   padding: 8px 10px;
   display: flex;
   flex-direction: column;
@@ -129,13 +129,13 @@ onMounted(load)
 }
 .bar {
   height: 8px;
-  background: #f0f1f3;
-  border-radius: 4px;
+  background: var(--color-fill-2);
+  border-radius: var(--border-radius-medium);
   overflow: hidden;
 }
 .bar i {
   display: block;
   height: 100%;
-  background: #f59e0b;
+  background: var(--warning-6);
 }
 </style>

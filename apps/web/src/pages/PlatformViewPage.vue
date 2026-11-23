@@ -39,7 +39,7 @@ async function load() {
 async function saveParam(key: 'build_concurrency' | 'queue_limit', value: number) {
   try {
     const res = await api.adminSettings(key, value, ui.state.scenario)
-    ui.push('success', '参数已更新', [`${key} = ${res.data.value}；只对新任务生效，正在运行的任务不受影响。`, '压测后只可下调，不可上调。'])
+    ui.push('success', '已保存', [`参数已更新：${key} = ${res.data.value}；只对新任务生效，正在运行的任务不受影响。`, '压测后只可下调，不可上调。'])
     await load()
   } catch (e) {
     error.value = e

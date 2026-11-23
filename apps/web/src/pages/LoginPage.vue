@@ -103,7 +103,7 @@ function simulateFail(code: string) {
   width: min(560px, 100%);
   background: #fff;
   border: 1px solid var(--c-line);
-  border-radius: 14px;
+  border-radius: var(--console-radius-panel);
   padding: 26px;
   display: flex;
   flex-direction: column;

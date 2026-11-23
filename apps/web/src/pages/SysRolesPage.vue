@@ -31,7 +31,7 @@ async function save() {
   if (!model.value) return
   try {
     const res = await api.saveRoles(model.value)
-    ui.push('success', `已生效（${res.data.version}）`, [`≤30 秒生效；影响：普通用户 ${res.data.affected.user} 人、管理员 ${res.data.affected.admin} 人、系统管理员 ${res.data.affected.sysadmin} 人。`, '变更写审计；不允许把授权扩成「可写」等级。'])
+    ui.push('success', '已保存', [`已生效（${res.data.version}）：≤30 秒生效；影响普通用户 ${res.data.affected.user} 人、管理员 ${res.data.affected.admin} 人、系统管理员 ${res.data.affected.sysadmin} 人。`, '变更写审计；不允许把授权扩成「可写」等级。'])
     dirty.value = false
     await load()
   } catch (e) {

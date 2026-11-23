@@ -19,15 +19,15 @@ const view = computed(() => formatError(explainError(props.error as never)))
 
 <style scoped>
 .err {
-  border: 1px solid #ffccc7;
-  background: #fff2f0;
-  border-radius: 8px;
-  padding: 12px 14px;
-  color: #4a1d1d;
+  border: 1px solid var(--danger-6);
+  background: var(--danger-1);
+  border-radius: var(--console-radius-control);
+  padding: var(--playdayy-size-3) var(--playdayy-size-4);
+  color: var(--color-text-1);
   font-size: 13px;
 }
 .err.compact {
-  padding: 8px 10px;
+  padding: var(--playdayy-size-2) var(--playdayy-size-3);
   font-size: 12px;
 }
 .head {

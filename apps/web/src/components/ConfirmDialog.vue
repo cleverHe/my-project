@@ -31,8 +31,11 @@ const model = defineModel<string>({ default: '' })
 <style scoped>
 .mask {
   position: fixed;
-  inset: 0;
-  background: rgba(17, 24, 39, 0.45);
+  left: 0;
+  top: 0;
+  width: 100vw;
+  height: 100dvh;
+  background: rgb(29 33 41 / 45%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -40,54 +43,65 @@ const model = defineModel<string>({ default: '' })
   padding: 16px;
 }
 .box {
-  background: #fff;
-  border-radius: 12px;
-  padding: 18px;
+  background: var(--color-bg-2);
+  border-radius: var(--console-radius-panel);
+  box-shadow: var(--console-popup-shadow);
+  padding: var(--playdayy-size-5);
   width: min(520px, 100%);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--playdayy-size-3);
 }
 h3 {
-  margin: 0;
-  font-size: 15px;
+  font-size: 16px;
+  line-height: 24px;
 }
 .field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  font-size: 12px;
-  color: #4b5563;
+  gap: var(--playdayy-size-1);
+  font-size: 13px;
+  color: var(--color-text-2);
 }
 input {
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  padding: 6px 8px;
-  font-size: 13px;
+  height: var(--console-form-h);
+  border: 1px solid var(--color-border-2);
+  border-radius: var(--console-radius-control);
+  padding: 0 11px;
+  font: inherit;
+  font-size: 14px;
+}
+input:focus {
+  outline: none;
+  border-color: var(--primary-6);
 }
 footer {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--playdayy-size-2);
 }
 button {
-  border-radius: 6px;
-  padding: 6px 12px;
-  font-size: 13px;
+  height: var(--console-control-h);
+  border-radius: var(--console-radius-control);
+  padding: 0 15px;
+  font: inherit;
+  font-size: 14px;
   cursor: pointer;
+  border: 1px solid var(--color-border-2);
+  background: var(--color-bg-1);
+  color: var(--color-text-1);
 }
-.ghost {
-  border: 1px solid #d1d5db;
-  background: #fff;
+.ghost:hover:not(:disabled) {
+  background: var(--color-fill-2);
 }
 .primary {
-  border: 1px solid #1d4ed8;
-  background: #1d4ed8;
+  border-color: var(--primary-6);
+  background: var(--primary-6);
   color: #fff;
 }
 .danger {
-  border: 1px solid #dc2626;
-  background: #dc2626;
+  border-color: var(--danger-6);
+  background: var(--danger-6);
   color: #fff;
 }
 button:disabled {

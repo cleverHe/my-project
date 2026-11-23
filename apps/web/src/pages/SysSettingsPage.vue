@@ -58,7 +58,7 @@ async function saveSpec() {
   if (!project.value) return
   try {
     await api.updateSpec(project.value.id, { cpu: spec.value.cpu, memory_mb: spec.value.memory_mb, disk_bytes: spec.value.disk_gb * 1024 ** 3, preview_limit: spec.value.preview_limit }, ui.state.scenario)
-    ui.push('success', '规格已更新', ['扩容需重启生效；缩减立即限制；已用数据不会被删除。', '该操作仅系统管理员可执行，已写审计。'])
+    ui.push('success', '已保存', ['规格已更新：扩容需重启生效；缩减立即限制；已用数据不会被删除。', '该操作仅系统管理员可执行，已写审计。'])
     await load()
   } catch (e) {
     error.value = e

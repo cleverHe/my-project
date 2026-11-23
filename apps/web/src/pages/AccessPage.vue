@@ -60,7 +60,7 @@ async function doUpdate() {
   try {
     const res = await api.updateAccessPack(id, ui.state.scenario)
     update.value = res.data.changes
-    ui.push('success', '规范已更新', [`新增 ${res.data.changes.added}、更新 ${res.data.changes.updated}、保留你的改动 ${res.data.changes.kept_user_edits}。`])
+    ui.push('success', '已保存', [`规范已更新：新增 ${res.data.changes.added}、更新 ${res.data.changes.updated}、保留你的改动 ${res.data.changes.kept_user_edits}。`])
   } catch (e) {
     error.value = e
   }
@@ -121,9 +121,9 @@ onMounted(load)
 
 <style scoped>
 .plain {
-  background: #fff;
-  border: 1px dashed #ffd591;
-  border-radius: 6px;
+  background: var(--color-bg-2);
+  border: 1px dashed var(--warning-6);
+  border-radius: var(--console-radius-control);
   padding: 6px 8px;
   margin: 4px 0;
   word-break: break-all;

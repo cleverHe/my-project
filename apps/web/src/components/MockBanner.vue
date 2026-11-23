@@ -22,20 +22,21 @@ const mode = USE_MOCK ? COPY.mockCapability : '试跑 BFF · 内存数据 / 未�
 .mock-banner {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 16px;
-  background: #fff7e6;
-  border-bottom: 1px solid #ffd591;
-  color: #874d00;
+  gap: var(--playdayy-size-2);
+  padding: 6px var(--playdayy-size-4);
+  background: var(--warning-1);
+  border-bottom: 1px solid var(--warning-6);
+  color: var(--color-text-1);
   font-size: 12px;
+  flex-wrap: wrap;
 }
 .dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #fa8c16;
+  background: var(--warning-6);
 }
 .sep {
-  color: #d4a373;
+  color: var(--color-text-3);
 }
 </style>

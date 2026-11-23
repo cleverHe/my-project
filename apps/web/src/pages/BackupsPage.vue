@@ -99,10 +99,10 @@ onMounted(load)
 .rule {
   flex: 1;
   min-width: 260px;
-  border: 1px solid var(--c-line);
-  border-radius: 8px;
+  border: 1px solid var(--color-neutral-3);
+  border-radius: var(--console-radius-control);
   padding: 10px;
-  font-size: 12px;
+  font-size: 13px;
 }
 .rule p {
   margin: 4px 0 0;

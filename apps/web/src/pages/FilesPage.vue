@@ -5,6 +5,8 @@ import { useRoute } from 'vue-router'
 import { api } from '@/api/client'
 import type { FileEntry } from '@/api/types'
 import ErrorNotice from '@/components/ErrorNotice.vue'
+import ListShell from '@/components/ListShell.vue'
+import { usePagedList } from '@/composables/usePagedList'
 import { formatBytes, formatTimeDual } from '@/domain/format'
 import { COPY } from '@/domain/text'
 import { useProject } from '@/stores/project'
@@ -23,6 +25,7 @@ const now = new Date('2026-11-20T09:20:00.000Z')
 
 const envId = computed(() => state.environments.find((e) => e.kind === kind.value)?.id ?? '')
 const noEnvironment = computed(() => ready.value && !envId.value)
+const { page, size, total, paged, setSize } = usePagedList(() => entries.value)
 
 async function load() {
   loading.value = true
@@ -76,20 +79,22 @@ watch(kind, load)
 
 <template>
   <div class="page">
-    <ErrorNotice v-if="error" :error="error" />
-    <section class="panel">
-      <div class="panel-head">
-        <h2>文件浏览</h2>
-        <div class="row">
-          <select v-model="kind" @change="load">
-            <option value="production">正式环境</option>
-            <option value="preview">预览环境（按分支）</option>
-          </select>
-          <button class="btn" @click="load">刷新</button>
-        </div>
+    <div class="page-head">
+      <div>
+        <h1>文件</h1>
+        <p class="sub">按项目与环境限定，只读浏览和下载；不提供在线删除或改写。</p>
       </div>
-      <p class="infobox">{{ COPY.filesReadOnly }} {{ COPY.filesBucketScope }}</p>
-      <p v-if="kind === 'preview'" class="hint">当前环境：{{ state.environments.find((e) => e.kind === 'preview')?.branch ?? '（还没有预览）' }}</p>
+    </div>
+    <ErrorNotice v-if="error" :error="error" />
+    <p class="infobox">{{ COPY.filesReadOnly }} {{ COPY.filesBucketScope }}</p>
+    <ListShell :total="total" :page="page" :size="size" @update:page="page = $event" @update:size="setSize">
+      <template #actions>
+        <select v-model="kind" aria-label="选择环境" @change="load">
+          <option value="production">正式环境</option>
+          <option value="preview">预览环境（按分支）</option>
+        </select>
+        <button class="btn" @click="load">刷新</button>
+      </template>
       <div v-if="loading" class="center-note">加载中…</div>
       <div v-else-if="state.error" class="center-note">
         <ErrorNotice :error="state.error" compact />
@@ -99,29 +104,33 @@ watch(kind, load)
         <p>该项目还没有{{ kind === 'preview' ? '可查看的预览环境' : '正式环境' }}；先创建预览或发布正式后再看文件。</p>
         <p class="hint">预览长期保留；正式发布不会删除预览。文件页只读，不提供在线删除/改写。</p>
       </div>
-      <table v-else>
-        <thead>
-          <tr><th>名称</th><th>类型</th><th class="num">大小</th><th>修改时间</th><th>操作</th></tr>
-        </thead>
-        <tbody>
-          <tr v-for="f in entries" :key="f.path">
-            <td class="mono">{{ f.path }}</td>
-            <td>{{ f.type === 'dir' ? '目录' : '文件' }}</td>
-            <td class="num">{{ f.type === 'dir' ? '—' : formatBytes(f.size_bytes) }}</td>
-            <td>{{ formatTimeDual(f.modified_at, now) }}</td>
-            <td>
-              <button class="btn" :disabled="f.type === 'dir' || downloading === f.path" @click="download(f)">
-                {{ downloading === f.path ? '下载中…' : '下载' }}
-              </button>
-            </td>
-          </tr>
-          <tr v-if="entries.length === 0">
-            <td colspan="5" class="hint">该环境暂无文件。写进容器本地的文件不保证跨部署保留，请写存储桶或申请持久卷。</td>
-          </tr>
-        </tbody>
-      </table>
-      <p class="hint">{{ COPY.noS3Api }} 应用存储不是 S3 契约：不要用 S3 SDK 依赖对象存储接口。</p>
-      <p class="hint">文件大小限制：单文件 100MB（试跑占位值，T-10 待产品确认；与产品侧的 T-10「暂停与预览」是两条不同记录）。</p>
-    </section>
+      <template v-else>
+        <table v-if="entries.length > 0">
+          <thead>
+            <tr><th>名称</th><th>类型</th><th class="num">大小</th><th>修改时间</th><th>操作</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="f in paged" :key="f.path">
+              <td class="mono">{{ f.path }}</td>
+              <td>{{ f.type === 'dir' ? '目录' : '文件' }}</td>
+              <td class="num">{{ f.type === 'dir' ? '—' : formatBytes(f.size_bytes) }}</td>
+              <td>{{ formatTimeDual(f.modified_at, now) }}</td>
+              <td>
+                <button class="btn" :disabled="f.type === 'dir' || downloading === f.path" @click="download(f)">
+                  {{ downloading === f.path ? '下载中…' : '下载' }}
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="empty">
+          该环境暂无文件。
+          <div class="empty-next">写进容器本地的文件不保证跨部署保留，请写存储桶或申请持久卷。</div>
+        </div>
+      </template>
+    </ListShell>
+    <p v-if="kind === 'preview'" class="hint">当前环境：{{ state.environments.find((e) => e.kind === 'preview')?.branch ?? '（还没有预览）' }}</p>
+    <p class="hint">{{ COPY.noS3Api }} 应用存储不是 S3 契约：不要用 S3 SDK 依赖对象存储接口。</p>
+    <p class="hint">文件大小限制：单文件 100MB（试跑占位值，T-10 待产品确认；与产品侧的 T-10「暂停与预览」是两条不同记录）。</p>
   </div>
 </template>

@@ -18,30 +18,30 @@ const tone = computed(() => (props.state === 'pending' ? 'info' : displayStateTo
   align-items: center;
   height: 22px;
   padding: 0 8px;
-  border-radius: 11px;
+  border-radius: var(--border-radius-medium);
   font-size: 12px;
   line-height: 1;
   border: 1px solid transparent;
   white-space: nowrap;
 }
 .ok {
-  background: #e8f7ee;
-  color: #1a7f45;
-  border-color: #b7e4c7;
+  background: var(--success-1);
+  color: var(--success-6);
+  border-color: var(--success-6);
 }
 .warn {
-  background: #fff4e5;
-  color: #9a4b00;
-  border-color: #ffd8a8;
+  background: var(--warning-1);
+  color: var(--warning-6);
+  border-color: var(--warning-6);
 }
 .muted {
-  background: #f2f3f5;
-  color: #606266;
-  border-color: #e4e7ed;
+  background: var(--color-fill-2);
+  color: var(--color-text-2);
+  border-color: var(--color-neutral-3);
 }
 .info {
-  background: #eaf2ff;
-  color: #1d4ed8;
-  border-color: #c7d9ff;
+  background: var(--primary-1);
+  color: var(--primary-7);
+  border-color: var(--primary-5);
 }
 </style>
