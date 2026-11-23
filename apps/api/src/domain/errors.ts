@@ -114,7 +114,8 @@ export const ERROR_TABLE = {
     nextStep: '下载或分卷后重试；上限值待系统参数定值。',
   },
   'cleanup.scope_invalid': {
-    status: 409,
+    // api-spec:224 错误码表明确为 422（QA attempt4 以规范为准修正断言；原实现返回 409 属偏离）
+    status: 422,
     what: '所选预览不在可清理范围内。',
     impact: '一个都没有删除。',
     nextStep: '只可选停用账号遗留、删除项目残留、无法自行删除的异常预览。',

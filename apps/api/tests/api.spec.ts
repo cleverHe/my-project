@@ -722,9 +722,9 @@ describe('开发自检修复：模板 / 下载 / 清理 / 角色模型 / 用量 
     expect(legacy.status).toBe(400)
     expect(legacy.body.errorCode).toBe('request.param_invalid')
 
-    // 正常预览不在范围
+    // 正常预览不在范围（api-spec:224：cleanup.scope_invalid = 422）
     const normal = await call('POST', '/api/v1/admin/previews:cleanup', { items: [{ env_id: 'env_trial_cs_prev3', reason: 'owner_disabled' }], confirm: true, confirm_text: '清理 1 个异常预览' }, { 'idempotency-key': 'cl-1' }, 'usr_trial_zheng')
-    expect(normal.status).toBe(409)
+    expect(normal.status).toBe(422)
     expect(normal.body.errorCode).toBe('cleanup.scope_invalid')
 
     // 未二次确认 → 拒绝
@@ -969,6 +969,24 @@ describe('开发自检修复：审计导出路径与候选列（DEF-12 / api-spe
     expect(lines.length).toBeGreaterThan(1)
     // 导出内容不得夹带凭据/令牌
     expect(res.body.toLowerCase()).not.toMatch(/password|bearer |mcp_[a-z0-9]{8}/)
+    await app.close()
+  })
+
+  it('同一 URL 按 Accept 协商：只接受 application/json 时返回 columns 元数据（12 列候选 + provisional），不冒充已批准', async () => {
+    const { app } = await client()
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/audit/export?format=csv',
+      headers: { cookie: 'trial_user=usr_trial_zheng; trial_csrf=csrf_test', 'x-csrf-token': 'csrf_test', accept: 'application/json' },
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.format).toBe('csv')
+    expect(Array.isArray(body.columns)).toBe(true)
+    expect(body.columns).toHaveLength(12)
+    expect(body.provisional).toBe(true)
+    expect(body.columns_confirmed).toBe(false)
+    expect(String(body.filename)).toMatch(/^audit-\d{4}-\d{2}-\d{2}\.csv$/)
     await app.close()
   })
 

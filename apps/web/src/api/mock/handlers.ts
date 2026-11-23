@@ -531,7 +531,7 @@ export function dispatch(req: MockRequest): MockResult {
       return fail(trace, 'cleanup.confirm_required', '缺少第二次确认或确认文案与数量不一致。', `需要二次确认，确认文案为「${expected}」。`, 422, { expected_confirm_text: expected })
     }
     const outside = items.filter((i) => !abnormalPreviews.some((a) => a.id === i.env_id))
-    if (outside.length > 0) return fail(trace, 'cleanup.scope_invalid', '选择的预览不在异常范围内。', '只能清理三种异常情形。', 409, { items: outside.map((i) => i.env_id) })
+    if (outside.length > 0) return fail(trace, 'cleanup.scope_invalid', '选择的预览不在异常范围内。', '只能清理三种异常情形。', 422, { items: outside.map((i) => i.env_id) })
     const succeeded: { env_id: string; branch: string; reason: string; freed_bytes: number }[] = []
     const failed: { env_id: string; errorCode: string; message: string; nextStep: string }[] = []
     for (const i of items) {

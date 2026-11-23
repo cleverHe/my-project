@@ -1296,7 +1296,25 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     if (!['csv', 'json'].includes(format)) return fail(reply, 'request.param_invalid', req.traceId, { field: 'format', allowed: ['csv', 'json'] })
     if (format === 'json') {
       return write(req, reply, { action: 'audit.export', target: { kind: 'audit', id: 'all' } }, () => ({
-        body: { format: 'json', rows: audits.length, items: audits, columns_confirmed: false, provisional: true },
+        body: { format: 'json', rows: audits.length, items: audits, columns: AUDIT_CSV_COLUMNS, columns_confirmed: false, provisional: true },
+      }))
+    }
+    // api-spec §10.4：`format=csv` 既要能下载真实 CSV 文件，也要返回 columns 元数据（候选 12 列 + provisional）。
+    // 用 Accept 协商，避免同一 URL 二义：只要客户端接受 text/csv（含浏览器直接下载的 */*）就给文件；
+    // 只接受 application/json 的调用方拿到元数据，列名仍未批准，绝不冒充最终字段。
+    const accept = String(req.headers.accept ?? '')
+    const wantsCsvFile = accept.includes('text/csv') || accept.includes('*/*') || accept === ''
+    if (!wantsCsvFile) {
+      return write(req, reply, { action: 'audit.export', target: { kind: 'audit', id: 'all' } }, () => ({
+        body: {
+          format: 'csv',
+          rows: audits.length,
+          columns: AUDIT_CSV_COLUMNS,
+          columns_confirmed: false,
+          provisional: true,
+          filename: `audit-${new Date().toISOString().slice(0, 10)}.csv`,
+          note: 'T-01 待确认：12 列为候选列名，未获业务批准；接受 text/csv 时返回真实文件。',
+        },
       }))
     }
     reply.header('content-type', 'text/csv; charset=utf-8')
@@ -1642,6 +1660,7 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     // api-spec §10.5 只约束「范围」（必须是三种异常情形之一）+ 逐项原因文本；
     // 范围以服务端候选集合为准，不信任前端传入的 reason 枚举值。
     const outside = items.filter((i) => !i.env_id || typeof i.reason !== 'string' || !i.reason.trim() || !abnormalPreviews.some((a) => a.id === i.env_id))
+    // api-spec:224 错误码表：cleanup.scope_invalid = 422（不是 409）
     if (outside.length > 0) return fail(reply, 'cleanup.scope_invalid', req.traceId, { items: outside.map((i) => i.env_id), note: '只能清理无主/残留/无法自删的异常预览，正常预览不允许清理。' })
     const succeeded: { env_id: string; branch: string; reason: string; freed_bytes: number }[] = []
     const failed: { env_id: string; errorCode: string; message: string; nextStep: string }[] = []
