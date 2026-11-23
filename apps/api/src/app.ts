@@ -9,6 +9,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import cookie from '@fastify/cookie'
 import { createHash, randomUUID } from 'node:crypto'
 import { errorBody, statusOf, type ErrorCode } from './domain/errors.js'
+import { paginate, parseListQuery, parseRange, sortBy } from './domain/list-query.js'
 import { adjustParamVerdict, requiresOp, PERMISSION_CACHE_TTL_MS, type Role } from './domain/permissions.js'
 import { abnormalPreviews, assignableOpsByRole, audits, definedOpsOf, effectiveOps, enabledOpsOf, groups, idempotency, me, platform, projects, projectById, roleModel, saveRoleModel, setUserOps, settings, shareLinks, tasks, templates, userById, userHasOp, users } from './repo/store.js'
 import type { AuditRow, Environment, Project, ShareLink, Task } from './types.js'
@@ -158,6 +159,17 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
 
   function fail(reply: FastifyReply, code: ErrorCode, trace: string, details?: Record<string, unknown>, statusOverride?: number) {
     return reply.code(statusOverride ?? statusOf(code)).send(errorBody(code, trace, details))
+  }
+
+  /**
+   * 列表查询统一入口（api-spec v1.2 §1.4）：
+   * - `scenario` 是试跑故障注入的传输参数，不是业务查询条件，校验前剔除
+   * - 未知参数/非白名单 page_size/sort → 400，不是静默忽略
+   */
+  function listQueryOf(req: FastifyRequest, allowedKeys: readonly string[], sortable?: readonly string[]) {
+    const raw = { ...(req.query as Record<string, string | undefined>) }
+    delete raw.scenario
+    return parseListQuery(raw, allowedKeys, sortable)
   }
 
   function publicRoutes(req: FastifyRequest): boolean {
@@ -426,13 +438,26 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     }
   }
 
-  app.get('/api/v1/projects', async (req) => {
-    const q = req.query as Record<string, string | undefined>
-    const items = projects
+  app.get('/api/v1/projects', async (req, reply) => {
+    const parsed = listQueryOf(req, ['status', 'q', 'page', 'page_size', 'sort'], ['updated_at', 'name', 'created_at'])
+    if (!parsed.ok) return fail(reply, parsed.error.code, req.traceId, parsed.error.details as Record<string, unknown>)
+    const { paging, sort, filters } = parsed.value
+    const keyword = (filters.q ?? '').trim()
+    if (keyword.length > 64) return fail(reply, 'request.param_invalid', req.traceId, { field: 'q', note: 'q 最长 64 字符' })
+    if (filters.status !== undefined && !['active', 'soft_deleted', 'all'].includes(filters.status)) {
+      return fail(reply, 'request.param_invalid', req.traceId, { field: 'status', allowed: ['active', 'soft_deleted', 'all'] })
+    }
+    const visible = projects
       .filter((p) => (req.actor!.role === 'sysadmin' ? true : relationOfProject(p, req.actor!.id, userById(req.actor!.id)?.groups ?? []).relation !== 'none'))
-      .filter((p) => (q.status === 'soft_deleted' ? p.status === 'soft_deleted' : q.status === 'all' ? true : p.status === 'active'))
-      .map((p) => cardOf(p, req))
-    return { items, total: items.length, page: 1, page_size: 20, has_next: false }
+      .filter((p) => (filters.status === 'soft_deleted' ? p.status === 'soft_deleted' : filters.status === 'all' ? true : p.status === 'active'))
+    // 名称/slug 模糊（api-spec §5.1 `q`），大小写不敏感
+    const matched = keyword
+      ? visible.filter((p) => p.name.toLowerCase().includes(keyword.toLowerCase()) || p.slug.toLowerCase().includes(keyword.toLowerCase()))
+      : visible
+    const sorted = sortBy(matched, sort, { updated_at: (p) => p.updated_at, name: (p) => p.name, created_at: (p) => p.created_at })
+    const slice = paginate(sorted, paging)
+    // total/has_next 必须与过滤后的集合同源（不是未过滤全量）
+    return { items: slice.items.map((p) => cardOf(p, req)), total: slice.total, page: slice.page, page_size: slice.page_size, has_next: slice.has_next }
   })
 
   app.get('/api/v1/projects/:id', async (req, reply) => {
@@ -1132,14 +1157,28 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   // ---------------- 管理员 ----------------
   // P-14 人员权限页要展示「模型内可勾选项」，但 /sys/roles 只对系统管理员开放（P-18）。
   // 因此把可分配项随人员列表一起给管理员，避免页面为拿标签去调一个必然 403 的接口。
-  app.get('/api/v1/admin/users', async () => ({
-    items: users.map((u) => ({ user_id: u.user_id, display_name: u.display_name, feishu_account: u.feishu_account, role: u.role, status: u.status, groups: u.groups, operations: u.operations })),
-    assignable_by_role: assignableOpsByRole(roleModel),
-    total: users.length,
-    page: 1,
-    page_size: 20,
-    has_next: false,
-  }))
+  app.get('/api/v1/admin/users', async (req, reply) => {
+    const parsed = listQueryOf(req, ['q', 'role', 'status', 'page', 'page_size'])
+    if (!parsed.ok) return fail(reply, parsed.error.code, req.traceId, parsed.error.details as Record<string, unknown>)
+    const { paging, filters } = parsed.value
+    if (filters.role !== undefined && !ROLES.has(filters.role)) return fail(reply, 'request.param_invalid', req.traceId, { field: 'role', allowed: ['user', 'admin', 'sysadmin'] })
+    if (filters.status !== undefined && !['active', 'disabled'].includes(filters.status)) return fail(reply, 'request.param_invalid', req.traceId, { field: 'status', allowed: ['active', 'disabled'] })
+    const keyword = (filters.q ?? '').trim().toLowerCase()
+    // P-14：按姓名 / 飞书账号搜索，服务端过滤后分页，total 与 items 同源
+    const matched = users
+      .filter((u) => (filters.role ? u.role === filters.role : true))
+      .filter((u) => (filters.status ? u.status === filters.status : true))
+      .filter((u) => (keyword ? u.display_name.toLowerCase().includes(keyword) || u.feishu_account.toLowerCase().includes(keyword) : true))
+    const slice = paginate(matched, paging)
+    return {
+      items: slice.items.map((u) => ({ user_id: u.user_id, display_name: u.display_name, feishu_account: u.feishu_account, role: u.role, status: u.status, groups: u.groups, operations: u.operations })),
+      assignable_by_role: assignableOpsByRole(roleModel),
+      total: slice.total,
+      page: slice.page,
+      page_size: slice.page_size,
+      has_next: slice.has_next,
+    }
+  })
 
   app.patch('/api/v1/admin/users/:userId', async (req, reply) => {
     const { userId } = req.params as { userId: string }
@@ -1252,11 +1291,45 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     })
   })
 
-  app.get('/api/v1/admin/audit', async (req) => {
-    const q = req.query as Record<string, string | undefined>
-    const items = audits.filter((a) => (q.action ? a.action.includes(q.action) : true)).slice(0, Number(q.page_size ?? 20))
-    return { items, total: audits.length, csv_columns: 12, csv_columns_confirmed: false, provisional: true, note: 'CSV 12 列名未确认（T-01）；导出前不得当作最终格式。' }
-  })
+  /** §10.4 审计查询：分页/排序参数走 §1.4 唯一实现点；total 与 items 同过滤条件同源（DEF-V02） */
+  const auditList = async (req: FastifyRequest, reply: FastifyReply) => {
+    if (!userHasOp(req.actor!.id, 'admin:audit')) return fail(reply, 'authz.forbidden', req.traceId, { required: 'audit:read' })
+    const parsed = listQueryOf(req, ['from', 'to', 'actor', 'action', 'project_id', 'result', 'page', 'page_size'])
+    if (!parsed.ok) return fail(reply, parsed.error.code, req.traceId, parsed.error.details as Record<string, unknown>)
+    const { paging, filters } = parsed.value
+    const range = parseRange(filters.from, filters.to)
+    if (!range.ok) return fail(reply, range.error.code, req.traceId, range.error.details as Record<string, unknown>)
+    if (filters.result !== undefined && !['success', 'failed'].includes(filters.result)) {
+      return fail(reply, 'request.param_invalid', req.traceId, { field: 'result', allowed: ['success', 'failed'] })
+    }
+    const action = (filters.action ?? '').trim().toLowerCase()
+    const actor = (filters.actor ?? '').trim()
+    const matched = audits
+      .filter((a) => (action ? a.action.toLowerCase().includes(action) : true))
+      .filter((a) => (actor ? a.actor_id === actor || a.actor_name.includes(actor) : true))
+      .filter((a) => (filters.project_id ? a.target_id === filters.project_id : true))
+      .filter((a) => (filters.result ? a.result === filters.result : true))
+      .filter((a) => {
+        const at = Date.parse(a.at)
+        return at >= range.value.fromMs && at < range.value.toMs
+      })
+    const slice = paginate(matched, paging)
+    return {
+      items: slice.items,
+      total: slice.total,
+      page: slice.page,
+      page_size: slice.page_size,
+      has_next: slice.has_next,
+      append_only: true,
+      retention_days: DEPLOY.auditRetentionDays,
+      csv_columns: 12,
+      csv_columns_confirmed: false,
+      provisional: true,
+      note: 'CSV 固定 12 列；列名待 T-01 业务确认。total 为同过滤条件下总数，不是当前页长度。',
+    }
+  }
+
+  app.get('/api/v1/admin/audit', auditList)
 
   // 管理路径别名：/admin/audit/export（兼容旧页面；规范路径见下方 §10.4 GET /audit/export）
   // api-spec §1.1：导出必须是 text/csv（不是把列名当 JSON 返回）；12 列名仍未确认，用响应头标注
@@ -1687,12 +1760,7 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   app.post('/api/v1/admin/previews:cleanup', previewsCleanup)
   app.post('/api/v1/admin/previews/cleanup', previewsCleanup)
 
-  app.get('/api/v1/audit', async (req, reply) => {
-    if (!userHasOp(req.actor!.id, 'admin:audit')) return fail(reply, 'authz.forbidden', req.traceId, { required: 'audit:read' })
-    const q = req.query as Record<string, string | undefined>
-    const items = audits.filter((a) => (q.action ? a.action.includes(q.action) : true)).slice(0, Number(q.page_size ?? 20))
-    return { items, total: audits.length, append_only: true, retention_days: DEPLOY.auditRetentionDays, csv_columns: 12, csv_columns_confirmed: false, note: 'CSV 固定 12 列；列名待 T-01 业务确认，导出前不编造列名。' }
-  })
+  app.get('/api/v1/audit', auditList)
 
   app.get('/api/v1/audit/export', auditExport)
   app.post('/api/v1/audit/export', auditExport)

@@ -19,6 +19,8 @@ const router = useRouter()
 const session = useSession()
 const ui = useUi()
 const items = ref<ProjectCard[]>([])
+const listTotal = ref(0)
+const listHasNext = ref(false)
 const error = ref<unknown>(null)
 const loading = ref(false)
 const showDeleted = ref(false)
@@ -39,8 +41,12 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    const res = await api.projects(showDeleted.value ? { status: 'soft_deleted' } : {})
+    // 列表接口按 api-spec §1.4 服务端分页（DEF-V01）；Dashboard 没有分页控件，
+    // 显式取上限 200 并如实提示还有更多，避免「第 21 个项目静默消失」
+    const res = await api.projects({ page_size: 200, ...(showDeleted.value ? { status: 'soft_deleted' } : {}) })
     items.value = res.data.items
+    listTotal.value = res.data.total
+    listHasNext.value = res.data.has_next
   } catch (e) {
     error.value = e
   } finally {
@@ -100,7 +106,10 @@ const who = computed(() => session.state.me?.display_name ?? '')
       <p class="hint">创建项目后会得到仓库、规范与 4 个门户 Skill；模板不可用时可回退空白模板，不会建空仓库。</p>
     </div>
 
-    <div v-else class="grid">
+    <p v-if="!loading && listHasNext" class="warnbox">
+      共 {{ listTotal }} 个项目，本页最多显示 200 个。超过上限请用搜索或联系系统管理员查看其余项目（不会静默隐藏）。
+    </p>
+    <div v-if="!loading && items.length" class="grid">
       <article v-for="p in items" :key="p.id" class="pcard">
         <header>
           <div class="title">

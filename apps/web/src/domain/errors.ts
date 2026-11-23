@@ -47,6 +47,9 @@ const TABLE: Record<string, { what: string; impact: string; nextStep: string; se
   'system.param_out_of_range': { what: '参数超出允许范围。', impact: '参数未改变。', nextStep: '填写范围内的整数后重试。' },
   'system.confirm_mismatch': { what: '确认词/确认名不一致。', impact: '操作未执行。', nextStep: '按提示完整输入后重试。' },
   'request.param_unknown': { what: '请求包含未知参数。', impact: '请求被拒绝，避免“以为筛了其实没筛”。', nextStep: '刷新页面重试；持续出现请反馈给开发。' },
+  'request.param_invalid': { what: '请求参数不合法。', impact: '本次操作未执行，数据没有被修改。', nextStep: '按提示修正后重试（分页只接受 10/20/50/100/200）。' },
+  'request.sort_invalid': { what: '排序字段不在白名单内。', impact: '本次查询未执行，数据没有被修改。', nextStep: '用页面提供的排序，或清空排序用默认排序。' },
+  'request.range_invalid': { what: '时间范围不合法（开始晚于结束）。', impact: '本次查询未执行，没有产生导出。', nextStep: '把开始时间调到结束时间之前再查。' },
   'request.not_found': { what: '请求的资源不存在。', impact: '没有返回任何业务数据。', nextStep: '刷新页面或返回上一级。' },
   'deploy.queue_full': { what: '发布队列已满（上限 10）。', impact: '本次未入队。', nextStep: '稍后重试，不要重复提交。' },
 }

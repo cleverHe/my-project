@@ -30,6 +30,49 @@ function ok(data: unknown, status = 200): MockResult {
   return { ok: true, status, data }
 }
 
+/** 服务端 page_size 白名单（api-spec v1.2 §1.4）；Mock 与 BFF 同契约，不做「静默忽略」 */
+const PAGE_SIZE_ALLOWED = [10, 20, 50, 100, 200] as const
+
+type Paging = { page: number; page_size: number }
+type PagingError = { errorCode: string; details: Record<string, unknown> }
+
+/**
+ * Mock 的分页参数校验：与 apps/api/src/domain/list-query.ts 保持同一行为，
+ * 用于在没有 BFF 时也能验证页面确实按服务端契约传参并消费 total/has_next。
+ */
+function readPaging(q: Record<string, string | undefined>, allowed: string[]): Paging | PagingError {
+  const unknown = Object.keys(q).filter((k) => !allowed.includes(k))
+  if (unknown.length > 0) return { errorCode: 'request.param_unknown', details: { unknown, allowed } }
+  const page = Number(q.page ?? 1)
+  const size = Number(q.page_size ?? 20)
+  if (!Number.isInteger(page) || page < 1) return { errorCode: 'request.param_invalid', details: { field: 'page', value: q.page } }
+  if (!(PAGE_SIZE_ALLOWED as readonly number[]).includes(size)) {
+    return { errorCode: 'request.param_invalid', details: { field: 'page_size', value: q.page_size, allowed: [...PAGE_SIZE_ALLOWED] } }
+  }
+  return { page, page_size: size }
+}
+
+function isPagingError(v: Paging | PagingError): v is PagingError {
+  return (v as PagingError).errorCode !== undefined
+}
+
+/** 过滤后的真实切片：total 取过滤后长度，has_next 由服务端算 */
+function sliceOf<T>(items: T[], p: Paging) {
+  const start = (p.page - 1) * p.page_size
+  return {
+    items: items.slice(start, start + p.page_size),
+    total: items.length,
+    page: p.page,
+    page_size: p.page_size,
+    has_next: p.page * p.page_size < items.length,
+  }
+}
+
+/** 查询串统一成字符串（mock 的 q 可能收到数字/布尔） */
+function asQuery(q: Record<string, string | number | boolean | undefined>): Record<string, string | undefined> {
+  return Object.fromEntries(Object.entries(q).map(([k, v]) => [k, v === undefined ? undefined : String(v)]))
+}
+
 const project = (id: string) => projects.find((p) => p.id === id)
 const token = (path: string) => path.split('/').filter(Boolean)
 
@@ -96,11 +139,28 @@ export function dispatch(req: MockRequest): MockResult {
 
   // ---------- 项目 ----------
   if (seg[0] === 'projects' && seg.length === 1 && method === 'GET') {
-    const items = projects
+    const page = readPaging(asQuery(q), ['status', 'q', 'page', 'page_size', 'sort'])
+    if (isPagingError(page)) return fail(trace, page.errorCode, '请求参数不合法。', '按页面提供的入口重试（page_size 只接受 10/20/50/100/200）。', 400, page.details)
+    const keyword = String(q.q ?? '').trim().toLowerCase()
+    const sortRaw = String(q.sort ?? '-updated_at')
+    const sortDir = sortRaw.startsWith('-') ? -1 : 1
+    const sortField = sortRaw.replace(/^-/, '')
+    if (!['updated_at', 'name', 'created_at'].includes(sortField)) {
+      return fail(trace, 'request.sort_invalid', '排序字段不在白名单内。', '用页面提供的排序，或清空排序用默认排序。', 400, { field: 'sort', value: sortRaw, allowed: ['updated_at', 'name', 'created_at'] })
+    }
+    const visible = projects
       .filter((p) => p.relation !== 'none' || me.role === 'sysadmin')
       .filter((p) => (q.status === 'soft_deleted' ? p.status === 'soft_deleted' : q.status === 'all' ? true : p.status === 'active'))
-      .map(cardOf)
-    return ok({ items, total: items.length, page: 1, page_size: 20, has_next: false })
+      .filter((p) => (keyword ? p.name.toLowerCase().includes(keyword) || p.slug.toLowerCase().includes(keyword) : true))
+      .slice()
+      .sort((a, b) => {
+        const ka = sortField === 'name' ? a.name : sortField === 'created_at' ? a.created_at : a.updated_at
+        const kb = sortField === 'name' ? b.name : sortField === 'created_at' ? b.created_at : b.updated_at
+        return ka < kb ? -sortDir : ka > kb ? sortDir : 0
+      })
+    // 服务端分页：先切片再映射卡片，total 与 items 同源（DEF-V01）
+    const slice = sliceOf(visible, page)
+    return ok({ ...slice, items: slice.items.map(cardOf) })
   }
   if (seg[0] === 'projects' && method === 'POST' && seg.length === 1) {
     if (scenario === 'template_down') {
@@ -419,9 +479,16 @@ export function dispatch(req: MockRequest): MockResult {
   // ---------- 后台：管理员 ----------
   if (seg[0] === 'admin' && seg[1] === 'users') {
     if (method === 'GET') {
+      const page = readPaging(asQuery(q), ['q', 'role', 'status', 'page', 'page_size'])
+      if (isPagingError(page)) return fail(trace, page.errorCode, '请求参数不合法。', '按页面提供的入口重试（page_size 只接受 10/20/50/100/200）。', 400, page.details)
       // P-14：可分配项随人员列表下发（管理员无权读 /sys/roles）
       const assignable = Object.fromEntries(roleModel.roles.map((r) => [r.role, r.modules.flatMap((m) => m.ops.map((o) => ({ code: o.code, label: o.label, enabled: o.enabled })))]))
-      return ok({ items: adminUsersSeed(), assignable_by_role: assignable, total: 5, page: 1, page_size: 20, has_next: false })
+      const keyword = String(q.q ?? '').trim().toLowerCase()
+      const matched = adminUsersSeed()
+        .filter((u) => (q.role ? u.role === String(q.role) : true))
+        .filter((u) => (q.status ? u.status === String(q.status) : true))
+        .filter((u) => (keyword ? `${u.display_name}${u.feishu_account}`.toLowerCase().includes(keyword) : true))
+      return ok({ ...sliceOf(matched, page), assignable_by_role: assignable })
     }
     if (method === 'PATCH' && seg[2]) {
       return ok({ updated: true, effective_within_seconds: 30, audit_recorded: true })
@@ -466,7 +533,30 @@ export function dispatch(req: MockRequest): MockResult {
     return ok({ format: 'json', rows: audit.length, items: audit, columns_confirmed: false, provisional: true })
   }
   if (seg[0] === 'admin' && seg[1] === 'audit' && method === 'GET') {
-    return ok({ items: audit, total: audit.length, page: 1, page_size: 50, has_next: false, csv_columns: 12, csv_columns_confirmed: false, provisional: true, note: 'CSV 固定 12 列；具体列名待业务确认（T-01）' })
+    const page = readPaging(asQuery(q), ['from', 'to', 'actor', 'action', 'project_id', 'result', 'page', 'page_size'])
+    if (isPagingError(page)) return fail(trace, page.errorCode, '请求参数不合法。', '按页面提供的入口重试（page_size 只接受 10/20/50/100/200）。', 400, page.details)
+    const action = String(q.action ?? '').trim().toLowerCase()
+    const actor = String(q.actor ?? '').trim()
+    const result = q.result === undefined ? undefined : String(q.result)
+    if (result !== undefined && !['success', 'failed'].includes(result)) {
+      return fail(trace, 'request.param_invalid', '结果筛选只接受 success / failed。', '改用页面提供的筛选。', 400, { field: 'result', allowed: ['success', 'failed'] })
+    }
+    const from = q.from === undefined ? -Infinity : Date.parse(String(q.from))
+    const to = q.to === undefined ? Infinity : Date.parse(String(q.to))
+    if (Number.isNaN(from) || Number.isNaN(to) || from > to) {
+      return fail(trace, 'request.range_invalid', '时间范围不合法。', '把开始时间调到结束时间之前再查。', 400, { field: 'from', from: String(q.from ?? ''), to: String(q.to ?? '') })
+    }
+    // total 为同过滤条件下的总数（DEF-V02）：不再返回未过滤的 audit.length
+    const matched = audit
+      .filter((a) => (action ? a.action.toLowerCase().includes(action) : true))
+      .filter((a) => (actor ? a.actor.includes(actor) : true))
+      .filter((a) => (q.project_id ? a.object.includes(String(q.project_id)) : true))
+      .filter((a) => (result ? a.result === result : true))
+      .filter((a) => {
+        const at = Date.parse(a.at)
+        return at >= from && at < to
+      })
+    return ok({ ...sliceOf(matched, page), csv_columns: 12, csv_columns_confirmed: false, provisional: true, append_only: true, retention_days: 365, note: 'CSV 固定 12 列；具体列名待业务确认（T-01）。total 为同过滤条件下总数。' })
   }
 
   if (seg[0] === 'admin' && seg[1] === 'alerts') {

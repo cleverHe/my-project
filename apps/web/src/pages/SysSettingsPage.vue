@@ -31,7 +31,7 @@ const selectable = computed(() => selectableRows(abnormal.value))
 async function load() {
   error.value = null
   try {
-    const [p, a, s] = await Promise.all([api.projects({ status: 'all' }), api.abnormalPreviews(), api.backupStatus()])
+    const [p, a, s] = await Promise.all([api.projects({ status: 'all', page_size: 200 }), api.abnormalPreviews(), api.backupStatus()])
     projects.value = p.data.items
     abnormal.value = a.data.items
     backupStatus.value = s.data as unknown as Record<string, unknown>

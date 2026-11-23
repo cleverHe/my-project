@@ -237,15 +237,16 @@ export const api = {
   restore: (id: string) => request<{ status: string }>(`/projects/${id}/restore`, { method: 'POST', body: {} }),
 
   // 管理员
-  adminUsers: () => request<AdminUsersPage>('/admin/users'),
+  adminUsers: (q: Q = {}) => request<AdminUsersPage>('/admin/users', { query: q }),
   updateUserOps: (userId: string, operations: string[]) => request<{ updated: boolean }>(`/admin/users/${userId}`, { method: 'PATCH', body: { operations } }),
   adminGroups: () => request<{ items: GroupInfo[]; member_limit: number }>('/groups'),
   dissolveGroup: (id: string) => request<{ dissolved: boolean }>(`/groups/${id}:dissolve`, { method: 'POST', body: {} }),
   adminPlatform: (scenario?: string) => request<PlatformView & { params: PlatformView['params']; paused: unknown }>('/admin/platform', { scenario }),
   adminSettings: (key: string, value: number, scenario?: string) =>
     request<{ key: string; value: number }>(`/admin/settings/${key}`, { method: 'PATCH', body: { value }, scenario }),
+  // §10.4：列表必须带 page/page_size/has_next，total 为同过滤条件总数（v1.2 DEF-V02）
   audit: async (q: Q = {}) => {
-    const res = await request<{ items: Record<string, unknown>[]; total: number; csv_columns: number; csv_columns_confirmed: boolean; note: string }>('/audit', { query: q })
+    const res = await request<Page<Record<string, unknown>> & { csv_columns: number; csv_columns_confirmed: boolean; append_only?: boolean; retention_days?: number; note: string }>('/audit', { query: q })
     return { ...res, data: { ...res.data, items: res.data.items.map(toAuditRow) } }
   },
   // api-spec §9.4：导出是 GET（format 走 query），CSV 固定 12 列（字段名待业务确认）

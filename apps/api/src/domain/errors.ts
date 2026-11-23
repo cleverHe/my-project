@@ -59,6 +59,19 @@ export const ERROR_TABLE = {
     impact: '本次操作未执行。',
     nextStep: '刷新页面后用页面提供的入口重试。',
   },
+  // api-spec v1.2 §1.4：排序字段白名单外 / 时间范围非法（与 param_invalid 分开，页面文案不同）
+  'request.sort_invalid': {
+    status: 400,
+    what: '排序字段不在白名单内。',
+    impact: '本次查询未执行，未改动任何数据。',
+    nextStep: '用页面提供的排序，或去掉 sort 参数用默认排序。',
+  },
+  'request.range_invalid': {
+    status: 400,
+    what: '时间范围不合法（开始时间晚于结束时间）。',
+    impact: '本次查询未执行，没有产生导出或修改。',
+    nextStep: '把开始时间调到结束时间之前再查。',
+  },
   'request.idempotency_required': {
     status: 400,
     what: '缺少幂等键（Idempotency-Key）。',

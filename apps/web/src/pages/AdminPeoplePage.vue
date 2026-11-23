@@ -5,13 +5,11 @@ import { api } from '@/api/client'
 import type { AdminUser, AssignableOp, Role } from '@/api/types'
 import ErrorNotice from '@/components/ErrorNotice.vue'
 import ListShell from '@/components/ListShell.vue'
-import { matchesKeyword, usePagedList } from '@/composables/usePagedList'
+import { useServerPagedList } from '@/composables/useServerPagedList'
 import { useUi } from '@/stores/ui'
 
 const ui = useUi()
-const users = ref<AdminUser[]>([])
 const assignableByRole = ref<Record<Role, AssignableOp[]> | null>(null)
-const error = ref<unknown>(null)
 const editing = ref<AdminUser | null>(null)
 const draft = ref<string[]>([])
 const filter = ref('')
@@ -24,21 +22,25 @@ const assignable = computed(() => {
   return assignableByRole.value[role] ?? []
 })
 
-const filtered = computed(() => users.value.filter((u) => matchesKeyword(filter.value, u.display_name, u.feishu_account)))
-const { page, size, total, paged, reset, setSize } = usePagedList(() => filtered.value)
-watch(filter, reset)
+/**
+ * 服务端分页 + 服务端搜索（paging-consumer-review / P-14 按姓名/飞书账号）：
+ * 旧实现只取一次全量再在本地 filter+slice，total 与 items 不同源；
+ * 现在 page/page_size/q 都交给服务端，页面只渲染返回的这一页。
+ */
+const { page, size, rows: users, total, loading, error, load, goto, setSize, reset } = useServerPagedList<AdminUser>(async ({ page: p, page_size }) => {
+  const q = filter.value.trim()
+  // /sys/roles 只对系统管理员开放（P-18）；管理员用随人员列表下发的可分配项（P-14）
+  const u = await api.adminUsers({ page: p, page_size, ...(q ? { q } : {}) })
+  assignableByRole.value = u.data.assignable_by_role ?? null
+  return { items: u.data.items, total: u.data.total, page: u.data.page, page_size: u.data.page_size, has_next: u.data.has_next }
+})
 
-async function load() {
-  error.value = null
-  try {
-    // /sys/roles 只对系统管理员开放（P-18）；管理员用随人员列表下发的可分配项（P-14）
-    const u = await api.adminUsers()
-    users.value = u.data.items
-    assignableByRole.value = u.data.assignable_by_role ?? null
-  } catch (e) {
-    error.value = e
-  }
-}
+/** 搜索变化：防抖 300ms 后回第 1 页重新查询 */
+let debounce: number | undefined
+watch(filter, () => {
+  window.clearTimeout(debounce)
+  debounce = window.setTimeout(() => reset(), 300)
+})
 
 function startEdit(u: AdminUser) {
   editing.value = u
@@ -79,14 +81,14 @@ onMounted(load)
       </div>
     </div>
     <ErrorNotice v-if="error" :error="error" />
-    <ListShell :total="total" :page="page" :size="size" @update:page="page = $event" @update:size="setSize">
+    <ListShell :total="total" :page="page" :size="size" @update:page="goto($event)" @update:size="setSize">
       <template #filters>
         <input v-model="filter" type="search" placeholder="按姓名 / 飞书账号筛选" />
       </template>
       <table>
         <thead><tr><th>姓名</th><th>飞书账号</th><th>角色</th><th>状态</th><th>操作权限</th><th>操作</th></tr></thead>
         <tbody>
-          <tr v-for="u in paged" :key="u.user_id">
+          <tr v-for="u in users" :key="u.user_id">
             <td>{{ u.display_name }}</td>
             <td class="mono">{{ u.feishu_account }}</td>
             <td>{{ u.role === 'user' ? '普通用户' : u.role === 'admin' ? '管理员' : '系统管理员' }}</td>
@@ -96,9 +98,12 @@ onMounted(load)
           </tr>
         </tbody>
       </table>
-      <div v-if="filtered.length === 0" class="empty">
-        没有匹配的人员。
-        <div class="empty-next">清空搜索条件；人员来自飞书通讯录，不是在本页新增。</div>
+      <div v-if="loading" class="empty">正在加载…</div>
+      <div v-else-if="total === 0" class="empty">
+        {{ filter.trim() ? '没有找到该账号。' : '当前没有人员记录。' }}
+        <div class="empty-next">
+          {{ filter.trim() ? '确认对方已在组织内；清空搜索或换个姓名 / 飞书账号再查。' : '人员来自飞书通讯录，不是在本页新增。' }}
+        </div>
       </div>
     </ListShell>
     <p class="hint">停用账号后：不能登录，已有授权保留但不生效；异常预览可按 GAP-05 由系统管理员人工清理。</p>

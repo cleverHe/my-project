@@ -88,14 +88,22 @@ dd {
   align-items: center;
   gap: var(--playdayy-size-2);
   margin-top: auto;
+  flex-wrap: wrap;
 }
 .link {
   font-size: 13px;
   color: var(--primary-6);
   text-decoration: none;
+  white-space: nowrap;
+  flex: 0 0 auto;
 }
 .primary {
   margin-left: auto;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--primary-6);
   background: var(--primary-6);
   color: #fff;

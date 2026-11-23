@@ -998,3 +998,148 @@ describe('开发自检修复：审计导出路径与候选列（DEF-12 / api-spe
     await app.close()
   })
 })
+
+describe('列表分页契约（DEF-V01/V02/V03，api-spec v1.2 §1.4）', () => {
+  it('GET /projects 拒绝非白名单 page_size，并附 allowed', async () => {
+    const { app, call } = await client()
+    for (const bad of ['500', '37']) {
+      const r = await call('GET', `/api/v1/projects?page_size=${bad}`)
+      expect(r.status).toBe(400)
+      expect(r.body.errorCode).toBe('request.param_invalid')
+      expect(r.body.details).toMatchObject({ field: 'page_size' })
+      expect(r.body.details.allowed).toEqual([10, 20, 50, 100, 200])
+    }
+    await app.close()
+  })
+
+  it('GET /projects 未知参数与非法排序分别返回 param_unknown / sort_invalid', async () => {
+    const { app, call } = await client()
+    const unknown = await call('GET', '/api/v1/projects?owner=usr_trial_lin')
+    expect(unknown.status).toBe(400)
+    expect(unknown.body.errorCode).toBe('request.param_unknown')
+    expect(unknown.body.details.unknown).toEqual(['owner'])
+    const sort = await call('GET', '/api/v1/projects?sort=owner_name')
+    expect(sort.status).toBe(400)
+    expect(sort.body.errorCode).toBe('request.sort_invalid')
+    await app.close()
+  })
+
+  it('GET /projects 真实计算 page/page_size/total/has_next（不再固定 page:1）', async () => {
+    const { app, call } = await client()
+    const all = await call('GET', '/api/v1/projects?page_size=10')
+    expect(all.status).toBe(200)
+    const total = all.body.total as number
+    expect(total).toBeGreaterThan(0)
+    expect(all.body).toMatchObject({ page: 1, page_size: 10, has_next: false })
+    const beyond = await call('GET', `/api/v1/projects?page_size=10&page=${total + 5}`)
+    expect(beyond.status).toBe(200)
+    expect(beyond.body.items).toEqual([])
+    expect(beyond.body.total).toBe(total)
+    expect(beyond.body.page).toBe(total + 5)
+    expect(beyond.body.has_next).toBe(false)
+    // 场景注入参数仍被前端传上来，不能算「未知参数」
+    const withScenario = await call('GET', '/api/v1/projects?scenario=authz_down')
+    expect(withScenario.status).toBe(200)
+    await app.close()
+  })
+
+  it('GET /projects 的 q 按名称/slug 过滤，total 与 items 同源', async () => {
+    const { app, call } = await client()
+    const hit = await call('GET', '/api/v1/projects?q=ai-cs')
+    expect(hit.status).toBe(200)
+    expect(hit.body.total).toBe(hit.body.items.length)
+    expect(hit.body.items.every((p: { name: string; slug: string }) => `${p.name}${p.slug}`.toLowerCase().includes('ai-cs'))).toBe(true)
+    const miss = await call('GET', '/api/v1/projects?q=not-exist-project')
+    expect(miss.body.total).toBe(0)
+    expect(miss.body.items).toEqual([])
+    expect(miss.body.page).toBe(1)
+    await app.close()
+  })
+
+  it('GET /admin/users 分页与 q 过滤走服务端（P-14 按姓名/飞书账号）', async () => {
+    const { app, call } = await client()
+    const first = await call('GET', '/api/v1/admin/users?page_size=10&page=1', undefined, {}, 'usr_trial_zhou')
+    expect(first.status).toBe(200)
+    const total = first.body.total as number
+    expect(total).toBeGreaterThanOrEqual(3)
+    expect(first.body.items).toHaveLength(total)
+    expect(first.body).toMatchObject({ page: 1, page_size: 10, has_next: false })
+    // 服务端真实切片：超出末页返回空页 + 真实 total（供 UI 回第 1 页）
+    const beyond = await call('GET', '/api/v1/admin/users?page_size=10&page=2', undefined, {}, 'usr_trial_zhou')
+    expect(beyond.body.items).toEqual([])
+    expect(beyond.body.total).toBe(total)
+    expect(beyond.body.has_next).toBe(false)
+    const badSize = await call('GET', '/api/v1/admin/users?page_size=37', undefined, {}, 'usr_trial_zhou')
+    expect(badSize.status).toBe(400)
+    expect(badSize.body.details.allowed).toEqual([10, 20, 50, 100, 200])
+    const search = await call('GET', '/api/v1/admin/users?q=lin', undefined, {}, 'usr_trial_zhou')
+    expect(search.status).toBe(200)
+    expect(search.body.total).toBe(search.body.items.length)
+    expect(search.body.items.every((u: { display_name: string; feishu_account: string }) => `${u.display_name}${u.feishu_account}`.toLowerCase().includes('lin'))).toBe(true)
+    const badRole = await call('GET', '/api/v1/admin/users?role=superuser', undefined, {}, 'usr_trial_zhou')
+    expect(badRole.status).toBe(400)
+    expect(badRole.body.details.allowed).toContain('sysadmin')
+    await app.close()
+  })
+
+  it('GET /audit 分页字段齐全，total 为同过滤条件总数（DEF-V02）', async () => {
+    const { app, call } = await client()
+    await call('POST', '/api/v1/mcp/key', {}, { 'idempotency-key': 'aud-pg-1' }, 'usr_trial_lin')
+    await call('POST', '/api/v1/mcp/key', {}, { 'idempotency-key': 'aud-pg-2' }, 'usr_trial_lin')
+    const all = await call('GET', '/api/v1/audit?page_size=10', undefined, {}, 'usr_trial_zhou')
+    expect(all.status).toBe(200)
+    expect(all.body).toMatchObject({ page: 1, page_size: 10 })
+    expect(typeof all.body.total).toBe('number')
+    expect(typeof all.body.has_next).toBe('boolean')
+    expect(all.body.items.length).toBe(Math.min(10, all.body.total))
+    const onlyKeys = await call('GET', '/api/v1/audit?action=mcp.key', undefined, {}, 'usr_trial_zhou')
+    expect(onlyKeys.body.total).toBe(onlyKeys.body.items.length)
+    expect(onlyKeys.body.items.every((a: { action: string }) => a.action.includes('mcp.key'))).toBe(true)
+    const filtered = await call('GET', '/api/v1/audit?result=failed', undefined, {}, 'usr_trial_zhou')
+    expect(filtered.body.items.every((a: { result: string }) => a.result === 'failed')).toBe(true)
+    const badResult = await call('GET', '/api/v1/audit?result=maybe', undefined, {}, 'usr_trial_zhou')
+    expect(badResult.status).toBe(400)
+    await app.close()
+  })
+
+  it('GET /audit 时间范围非法返回 range_invalid，非白名单 page_size 返回 param_invalid', async () => {
+    const { app, call } = await client()
+    const range = await call('GET', '/api/v1/audit?from=2026-11-21T00:00:00.000Z&to=2026-11-20T00:00:00.000Z', undefined, {}, 'usr_trial_zhou')
+    expect(range.status).toBe(400)
+    expect(range.body.errorCode).toBe('request.range_invalid')
+    const size = await call('GET', '/api/v1/audit?page_size=500', undefined, {}, 'usr_trial_zhou')
+    expect(size.status).toBe(400)
+    expect(size.body.errorCode).toBe('request.param_invalid')
+    await app.close()
+  })
+
+  it('超过 200 条真实数据：page_size=200 两页翻完，无重复无遗漏，total 一致', async () => {
+    const { app, call } = await client()
+    // 每次 MCP Key 创建都会追加一条审计（只追加写），用于造出 >200 条真实记录
+    for (let i = 0; i < 205; i += 1) {
+      const r = await call('POST', '/api/v1/mcp/key', {}, { 'idempotency-key': `aud-bulk-${i}` }, 'usr_trial_lin')
+      expect(r.status).toBe(201)
+    }
+    const first = await call('GET', '/api/v1/audit?page_size=200&page=1', undefined, {}, 'usr_trial_zhou')
+    expect(first.status).toBe(200)
+    const total = first.body.total as number
+    expect(total).toBeGreaterThan(200)
+    expect(first.body.items).toHaveLength(200)
+    expect(first.body.has_next).toBe(true)
+
+    const second = await call('GET', '/api/v1/audit?page_size=200&page=2', undefined, {}, 'usr_trial_zhou')
+    expect(second.body.items).toHaveLength(total - 200)
+    expect(second.body.has_next).toBe(false)
+    expect(second.body.total).toBe(total)
+
+    const ids = new Set([...first.body.items, ...second.body.items].map((a: { id: string }) => a.id))
+    expect(ids.size).toBe(total)
+
+    // 最后一页之后：空页 + 真实 total，供 UI 回第 1 页
+    const beyond = await call('GET', `/api/v1/audit?page_size=200&page=${Math.ceil(total / 200) + 1}`, undefined, {}, 'usr_trial_zhou')
+    expect(beyond.body.items).toEqual([])
+    expect(beyond.body.total).toBe(total)
+    expect(beyond.body.has_next).toBe(false)
+    await app.close()
+  })
+})
